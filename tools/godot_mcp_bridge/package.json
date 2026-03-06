@@ -1,0 +1,18 @@
+{
+  "name": "godot-mcp-http-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "HTTP bridge for godot-mcp stdio server",
+  "scripts": {
+    "start": "node bridge.js",
+    "dev": "node bridge.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "0.6.0",
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
