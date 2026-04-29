@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'local_runtime.dart';
 import 'models.dart';
 import 'theme.dart';
 
@@ -25,6 +26,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   );
   static const MethodChannel _backgroundGuardChannel = MethodChannel(
     'ai_mobile_coder_ui/background_guard',
+  );
+  static const MethodChannel _localRuntimeChannel = MethodChannel(
+    'ai_mobile_coder_ui/local_runtime',
   );
   static const String _defaultAssistantGreeting =
       '你好，我是你的移动端 AI 编程助手。先告诉我你想修改什么，我会给出补丁建议。';
@@ -134,6 +138,10 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   int? _backgroundReplyStartedAtMs;
   String _backgroundReplyProgress = '';
   bool _backgroundGuardActive = false;
+  LocalRuntimeStatusSnapshot _localRuntimeStatus =
+      const LocalRuntimeStatusSnapshot.unsupported();
+  bool _loadingLocalRuntimeStatus = false;
+  bool _preparingLocalWorkspace = false;
 
   static const Set<String> _chatCapableProviders = {
     'openai',
@@ -184,6 +192,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     super.initState();
     _activeConversationId = _createConversationId();
     unawaited(_restoreState());
+    unawaited(_refreshLocalRuntimeStatus());
   }
 
   @override
@@ -210,6 +219,196 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     _godotBridgeUrlController.dispose();
     _godotBridgeTokenController.dispose();
     super.dispose();
+  }
+
+  void _setLocalRuntimeStatusFromRaw(dynamic raw, {bool withSetState = true}) {
+    final mapped = raw is Map
+        ? LocalRuntimeStatusSnapshot.fromMap(
+            raw.map((key, value) => MapEntry(key, value)),
+          )
+        : const LocalRuntimeStatusSnapshot.unsupported();
+    if (!mounted || !withSetState) {
+      _localRuntimeStatus = mapped;
+      return;
+    }
+    setState(() {
+      _localRuntimeStatus = mapped;
+    });
+  }
+
+  Future<void> _refreshLocalRuntimeStatus({
+    bool showFailureSnackBar = false,
+  }) async {
+    if (!Platform.isAndroid) {
+      if (!mounted) {
+        _localRuntimeStatus = const LocalRuntimeStatusSnapshot.unsupported();
+        return;
+      }
+      setState(() {
+        _localRuntimeStatus = const LocalRuntimeStatusSnapshot.unsupported();
+      });
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _loadingLocalRuntimeStatus = true;
+      });
+    } else {
+      _loadingLocalRuntimeStatus = true;
+    }
+
+    try {
+      final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+        'getRuntimeStatus',
+      );
+      _setLocalRuntimeStatusFromRaw(raw);
+    } catch (error) {
+      if (!mounted) {
+        _localRuntimeStatus = _localRuntimeStatus.copyWith(
+          supported: true,
+          lastError: '$error',
+        );
+      } else {
+        setState(() {
+          _localRuntimeStatus = _localRuntimeStatus.copyWith(
+            supported: true,
+            lastError: '$error',
+          );
+        });
+      }
+      if (showFailureSnackBar && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load local runtime status: $error'),
+          ),
+        );
+      }
+    } finally {
+      if (!mounted) {
+        _loadingLocalRuntimeStatus = false;
+      } else {
+        setState(() {
+          _loadingLocalRuntimeStatus = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _startLocalRuntime() async {
+    if (!Platform.isAndroid) return;
+    setState(() {
+      _loadingLocalRuntimeStatus = true;
+    });
+    try {
+      final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+        'startRuntime',
+      );
+      _setLocalRuntimeStatusFromRaw(raw);
+      _terminalLogs.add('[local-runtime] started');
+      _persistState();
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Local runtime started.')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to start local runtime: $error')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingLocalRuntimeStatus = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _stopLocalRuntime() async {
+    if (!Platform.isAndroid) return;
+    setState(() {
+      _loadingLocalRuntimeStatus = true;
+    });
+    try {
+      final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+        'stopRuntime',
+      );
+      _setLocalRuntimeStatusFromRaw(raw);
+      _terminalLogs.add('[local-runtime] stopped');
+      _persistState();
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Local runtime stopped.')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to stop local runtime: $error')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingLocalRuntimeStatus = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _prepareLocalWorkspaceMirror() async {
+    final projectRootPath = _projectRootPath;
+    if (projectRootPath == null || projectRootPath.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a project folder first.')),
+      );
+      return;
+    }
+    if (!Platform.isAndroid) return;
+
+    setState(() {
+      _preparingLocalWorkspace = true;
+    });
+    try {
+      if (!_localRuntimeStatus.isRunning) {
+        await _startLocalRuntime();
+      }
+      final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+        'prepareWorkspace',
+        <String, dynamic>{'projectRootPath': projectRootPath},
+      );
+      _setLocalRuntimeStatusFromRaw(raw);
+      _terminalLogs.add('[local-runtime] mirrored $projectRootPath');
+      _persistState();
+      if (mounted) {
+        final workspacePath = _localRuntimeStatus.activeWorkspacePath;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              workspacePath.isEmpty
+                  ? 'Workspace mirror prepared.'
+                  : 'Workspace mirror ready: $workspacePath',
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to prepare workspace mirror: $error')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _preparingLocalWorkspace = false;
+        });
+      }
+    }
   }
 
   ModelProvider get _activeProvider {
@@ -4336,7 +4535,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       int scannedEntries,
       String? readError,
     })
-  > _scanProjectSnippets(String folderPath) async {
+  >
+  _scanProjectSnippets(String folderPath) async {
     final snippets = <ProjectFileSnippet>[];
     var scannedDirs = 0;
     var scannedEntries = 0;
@@ -4444,7 +4644,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           recursive: false,
           followLinks: false,
         )) {
-          final relative = _normalizeInputPath(_relativePath(entity.path, root));
+          final relative = _normalizeInputPath(
+            _relativePath(entity.path, root),
+          );
           if (relative.isEmpty) continue;
           final segments = relative.split('/');
           final name = segments.isEmpty ? relative : segments.last;
@@ -4570,9 +4772,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           const <_DrawerExplorerEntry>[];
       final dirCount = rootEntries.where((item) => item.isDirectory).length;
       final fileCount = rootEntries.length - dirCount;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('已加载根目录：$fileCount 个文件，$dirCount 个目录')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已加载根目录：$fileCount 个文件，$dirCount 个目录')),
+      );
     }
   }
 
@@ -5196,7 +5398,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
 
     if (providerId == 'openrouter') {
       headers['HTTP-Referer'] = 'https://localhost';
-      headers['X-Title'] = 'AI Mobile Coder';
+      headers['X-Title'] = 'yuandex';
     }
     for (final entry in _cleanHeaderMap(extraHeaders).entries) {
       headers[entry.key] = entry.value;
@@ -8288,7 +8490,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     }
     if (!mounted) return;
     setState(() {
-      final index = _projectFiles.indexWhere((item) => item.path == snippet.path);
+      final index = _projectFiles.indexWhere(
+        (item) => item.path == snippet.path,
+      );
       if (index >= 0) {
         _projectFiles[index] = snippet;
       } else {
@@ -8472,8 +8676,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                   fontWeight: FontWeight.w500,
                   color: Color(0xFF172332),
                 ),
-                ),
               ),
+            ),
             if (!entry.isDirectory)
               Padding(
                 padding: const EdgeInsets.only(left: 8),
@@ -8519,7 +8723,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           return;
         }
         final expanded =
-            child.isDirectory && _drawerExplorerExpandedPaths.contains(child.path);
+            child.isDirectory &&
+            _drawerExplorerExpandedPaths.contains(child.path);
         rows.add(
           _buildDrawerExplorerNodeTile(
             entry: child,
@@ -8760,9 +8965,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                 child: Row(
                   children: [
                     Text(
-                      hasProject
-                          ? '根目录: ${rootEntries.length} 项'
-                          : '未加载项目目录',
+                      hasProject ? '根目录: ${rootEntries.length} 项' : '未加载项目目录',
                       style: const TextStyle(
                         fontSize: 11,
                         color: Color(0xFF6B8098),
@@ -9708,6 +9911,13 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         ),
         const SizedBox(height: 8),
         const Divider(height: 1),
+        const _SectionTitle(title: 'Local Runtime'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+          child: _buildLocalRuntimeSection(),
+        ),
+        const SizedBox(height: 8),
+        const Divider(height: 1),
         const _SectionTitle(title: '后台防中断'),
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
@@ -9979,6 +10189,31 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             ),
           ),
           const SizedBox(height: 8),
+          FilledButton.tonalIcon(
+            onPressed: _preparingLocalWorkspace
+                ? null
+                : _prepareLocalWorkspaceMirror,
+            icon: _preparingLocalWorkspace
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.copy_all_rounded),
+            label: Text(
+              _preparingLocalWorkspace
+                  ? 'Preparing local mirror...'
+                  : 'Prepare Local Workspace Mirror',
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _localRuntimeStatus.hasWorkspace
+                ? 'Mirror ready: ${_localRuntimeStatus.activeWorkspacePath}'
+                : 'Mirror not prepared yet.',
+            style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+          ),
+          const SizedBox(height: 8),
           SwitchListTile(
             value: _aiFsGranted,
             contentPadding: EdgeInsets.zero,
@@ -10122,6 +10357,115 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                 ),
               );
             }),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocalRuntimeSection() {
+    final supported = Platform.isAndroid && _localRuntimeStatus.supported;
+    final running = _localRuntimeStatus.isRunning;
+    final summary = _localRuntimeStatus.summary;
+    final workspacePath = _localRuntimeStatus.activeWorkspacePath;
+    final runtimeRoot = _localRuntimeStatus.runtimeRoot;
+    final workspacesRoot = _localRuntimeStatus.workspacesRoot;
+    final lastError = _localRuntimeStatus.lastError;
+    final fileCount = _localRuntimeStatus.mirroredFileCount;
+    final directoryCount = _localRuntimeStatus.mirroredDirectoryCount;
+
+    return _PanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  summary,
+                  style: const TextStyle(fontSize: 12, color: AppPalette.muted),
+                ),
+              ),
+              if (_loadingLocalRuntimeStatus)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.icon(
+                onPressed: !supported || _loadingLocalRuntimeStatus
+                    ? null
+                    : (running ? _stopLocalRuntime : _startLocalRuntime),
+                icon: Icon(
+                  running
+                      ? Icons.stop_circle_outlined
+                      : Icons.play_arrow_rounded,
+                ),
+                label: Text(running ? 'Stop Runtime' : 'Start Runtime'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _loadingLocalRuntimeStatus
+                    ? null
+                    : () =>
+                          _refreshLocalRuntimeStatus(showFailureSnackBar: true),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Refresh'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !supported || _preparingLocalWorkspace
+                    ? null
+                    : _prepareLocalWorkspaceMirror,
+                icon: const Icon(Icons.copy_all_rounded),
+                label: const Text('Mirror Workspace'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            supported
+                ? 'Platform: Android local runtime enabled'
+                : 'Platform: local runtime unavailable',
+            style: const TextStyle(fontSize: 12, color: AppPalette.ink),
+          ),
+          if (runtimeRoot.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Runtime root: $runtimeRoot',
+              style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+            ),
+          ],
+          if (workspacesRoot.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Workspace root: $workspacesRoot',
+              style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+            ),
+          ],
+          if (workspacePath.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Active mirror: $workspacePath',
+              style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Mirrored items: $fileCount files, $directoryCount directories',
+              style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+            ),
+          ],
+          if (lastError.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Last error: $lastError',
+              style: const TextStyle(fontSize: 11, color: Colors.redAccent),
+            ),
           ],
         ],
       ),
@@ -10745,7 +11089,3 @@ class _GlassCard extends StatelessWidget {
     );
   }
 }
-
-
-
-

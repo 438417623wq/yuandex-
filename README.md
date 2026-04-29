@@ -1,39 +1,42 @@
-# AI Mobile Coder UI
+# yuandex
 
-移动端 AI 编程助手（Flutter）。
+Local-first mobile AI coding agent built with Flutter.
 
-## 功能
+## Features
 
-- 移动端聊天式编程助手 UI
-- 项目文件读写工具集成（可选授权）
-- 终端调试面板
-- Godot MCP 网关接入能力
+- Mobile chat-first coding assistant UI
+- Project file browsing and editing
+- Local Android runtime foundation
+- Bottom terminal/debug panel
+- Godot MCP bridge support
 
-## Godot MCP 集成
+## Local Runtime
 
-已内置 `godot_*` 工具调用入口，链路如下：
+The project now includes a first-stage local Android runtime foundation:
 
-- App（手机） -> `godot_mcp_bridge`（HTTP） -> `godot-mcp`（stdio） -> Godot CLI
+- foreground runtime service
+- local workspace mirroring
+- Flutter runtime status panel
 
-桥接服务文档：
+See [docs/local_android_runtime_plan.md](docs/local_android_runtime_plan.md).
+
+## Godot MCP
+
+Built-in `godot_*` tool hooks are available through the HTTP bridge:
+
+- App -> `godot_mcp_bridge` -> `godot-mcp` -> Godot CLI
+
+Bridge setup documentation:
 
 - [tools/godot_mcp_bridge/README.md](tools/godot_mcp_bridge/README.md)
 
-## 本地开发
+## Development
 
 ```bash
 flutter pub get
 flutter run
 ```
 
-## 开源协作
-
-欢迎提交 Issue 和 PR。提交前建议：
-
-- 先描述复现步骤或需求背景
-- 变更尽量小而清晰
-- 提交前执行 `flutter analyze`
-
 ## License
 
-本项目采用 [MIT License](LICENSE)。
+[MIT License](LICENSE)

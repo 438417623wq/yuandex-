@@ -1,11 +1,11 @@
 {
-    "name": "ai_mobile_coder_ui",
-    "short_name": "ai_mobile_coder_ui",
+    "name": "yuandex",
+    "short_name": "yuandex",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Local-first mobile AI coding agent.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

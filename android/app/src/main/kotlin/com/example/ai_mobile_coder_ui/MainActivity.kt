@@ -22,6 +22,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val STORAGE_CHANNEL = "ai_mobile_coder_ui/storage_access"
         private const val BACKGROUND_GUARD_CHANNEL = "ai_mobile_coder_ui/background_guard"
+        private const val LOCAL_RUNTIME_CHANNEL = "ai_mobile_coder_ui/local_runtime"
         private const val REQUEST_CODE_POST_NOTIFICATIONS = 31041
     }
 
@@ -138,6 +139,48 @@ class MainActivity : FlutterActivity() {
                 }
             } catch (e: Exception) {
                 result.error("background_guard_error", e.message, null)
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            LOCAL_RUNTIME_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "getRuntimeStatus" -> {
+                        result.success(LocalRuntimeManager.getStatus(this))
+                    }
+
+                    "startRuntime" -> {
+                        LocalRuntimeManager.startRuntime(this)
+                        result.success(LocalRuntimeManager.getStatus(this))
+                    }
+
+                    "stopRuntime" -> {
+                        LocalRuntimeManager.stopRuntime(this)
+                        result.success(LocalRuntimeManager.getStatus(this))
+                    }
+
+                    "prepareWorkspace" -> {
+                        val projectRootPath = call.argument<String>("projectRootPath").orEmpty()
+                        if (projectRootPath.isBlank()) {
+                            result.error("invalid_args", "projectRootPath is required.", null)
+                        } else {
+                            result.success(
+                                LocalRuntimeManager.prepareWorkspace(
+                                    context = this,
+                                    projectRootPath = projectRootPath
+                                )
+                            )
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            } catch (e: Exception) {
+                LocalRuntimeManager.recordLastError(this, e.message ?: "Unknown local runtime error")
+                result.error("local_runtime_error", e.message, null)
             }
         }
     }

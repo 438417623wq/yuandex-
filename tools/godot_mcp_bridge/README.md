@@ -18,7 +18,7 @@ npm run build
 ## 2) 启动桥接服务
 
 ```powershell
-cd F:\ai\mmmmmmm\ai_mobile_coder_ui\tools\godot_mcp_bridge
+cd F:\ai\mmmmmmm\yuandex\tools\godot_mcp_bridge
 npm install
 
 $env:GODOT_MCP_ENTRY="F:\ai\mmmmmmm\godot-mcp\build\index.js"
