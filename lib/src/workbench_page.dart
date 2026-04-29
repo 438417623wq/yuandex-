@@ -135,13 +135,16 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   HttpClientRequest? _activeChatRequest;
   final List<_AiRoundRecord> _aiRoundHistory = [];
   Timer? _backgroundGuardTicker;
+  Timer? _terminalPoller;
   int? _backgroundReplyStartedAtMs;
   String _backgroundReplyProgress = '';
   bool _backgroundGuardActive = false;
   LocalRuntimeStatusSnapshot _localRuntimeStatus =
       const LocalRuntimeStatusSnapshot.unsupported();
+  LocalShellSnapshot _localShellSnapshot = const LocalShellSnapshot.empty();
   bool _loadingLocalRuntimeStatus = false;
   bool _preparingLocalWorkspace = false;
+  bool _loadingShellSnapshot = false;
 
   static const Set<String> _chatCapableProviders = {
     'openai',
@@ -201,6 +204,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       unawaited(_cleanupBackupDir(round.backupDirPath));
     }
     _backgroundGuardTicker?.cancel();
+    _terminalPoller?.cancel();
     if (_backgroundGuardActive) {
       unawaited(_stopBackgroundReplyGuard(force: true));
     }
@@ -408,6 +412,153 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           _preparingLocalWorkspace = false;
         });
       }
+    }
+  }
+
+  void _startTerminalPolling() {
+    _terminalPoller?.cancel();
+    if (!Platform.isAndroid) return;
+    _terminalPoller = Timer.periodic(const Duration(milliseconds: 900), (_) {
+      if (!_showTerminal) return;
+      unawaited(_refreshShellSnapshot());
+    });
+  }
+
+  void _stopTerminalPolling() {
+    _terminalPoller?.cancel();
+    _terminalPoller = null;
+  }
+
+  void _applyShellSnapshot(dynamic raw, {bool autoScroll = false}) {
+    final snapshot = raw is Map
+        ? LocalShellSnapshot.fromMap(
+            raw.map((key, value) => MapEntry(key, value)),
+          )
+        : const LocalShellSnapshot.empty();
+    _localShellSnapshot = snapshot;
+    final nextLogs = snapshot.lines.isEmpty
+        ? <String>[
+            if (snapshot.isRunning)
+              '[local-shell] session running at ${snapshot.workingDirectory}'
+            else if (snapshot.lastError.isNotEmpty)
+              '[local-shell] ${snapshot.lastError}'
+            else
+              'Astra Terminal ready.',
+          ]
+        : snapshot.lines;
+    _terminalLogs
+      ..clear()
+      ..addAll(nextLogs);
+    if (!mounted) return;
+    setState(() {});
+    if (autoScroll) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_terminalScroll.hasClients) {
+          _terminalScroll.animateTo(
+            _terminalScroll.position.maxScrollExtent + 120,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
+  }
+
+  Future<void> _refreshShellSnapshot({bool autoScroll = false}) async {
+    if (!Platform.isAndroid) return;
+    if (_loadingShellSnapshot) return;
+    _loadingShellSnapshot = true;
+    try {
+      final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+        'getShellSnapshot',
+      );
+      _applyShellSnapshot(raw, autoScroll: autoScroll);
+    } catch (_) {
+      // Ignore polling errors to keep the terminal usable.
+    } finally {
+      _loadingShellSnapshot = false;
+    }
+  }
+
+  Future<void> _startShellSession() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+        'startShellSession',
+      );
+      _applyShellSnapshot(raw, autoScroll: true);
+      await _refreshLocalRuntimeStatus();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to start local shell: $error')),
+      );
+    }
+  }
+
+  Future<void> _stopShellSession() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+        'stopShellSession',
+      );
+      _applyShellSnapshot(raw, autoScroll: true);
+      await _refreshLocalRuntimeStatus();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to stop local shell: $error')),
+      );
+    }
+  }
+
+  Future<void> _clearShellBuffer() async {
+    if (!Platform.isAndroid) {
+      setState(
+        () => _terminalLogs
+          ..clear()
+          ..add('Astra Terminal ready.'),
+      );
+      _persistState();
+      return;
+    }
+    try {
+      final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+        'clearShellBuffer',
+      );
+      _applyShellSnapshot(raw);
+      _persistState();
+    } catch (_) {
+      setState(
+        () => _terminalLogs
+          ..clear()
+          ..add('Astra Terminal ready.'),
+      );
+      _persistState();
+    }
+  }
+
+  Future<void> _sendShellInput(String input) async {
+    if (!Platform.isAndroid) return;
+    try {
+      if (!_localRuntimeStatus.isRunning) {
+        await _startLocalRuntime();
+      }
+      if (!_localShellSnapshot.isRunning) {
+        await _startShellSession();
+      }
+      final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+        'sendShellInput',
+        <String, dynamic>{'input': input},
+      );
+      _applyShellSnapshot(raw, autoScroll: true);
+      _persistState();
+      await _refreshLocalRuntimeStatus();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to send shell input: $error')),
+      );
     }
   }
 
@@ -7902,9 +8053,16 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   }
 
   void _toggleTerminal([bool? value]) {
+    final nextValue = value ?? !_showTerminal;
     setState(() {
-      _showTerminal = value ?? !_showTerminal;
+      _showTerminal = nextValue;
     });
+    if (nextValue) {
+      _startTerminalPolling();
+      unawaited(_refreshShellSnapshot());
+    } else {
+      _stopTerminalPolling();
+    }
     _persistState();
   }
 
@@ -7912,6 +8070,38 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     final cmd = _terminalController.text.trim();
     if (cmd.isEmpty) return;
     _terminalController.clear();
+
+    if (cmd.startsWith('@fs ')) {
+      _promptController.text = cmd;
+      unawaited(_sendPrompt());
+      return;
+    }
+
+    if (cmd == 'clear' && Platform.isAndroid && _localRuntimeStatus.supported) {
+      unawaited(_clearShellBuffer());
+      return;
+    }
+
+    if (cmd == 'runtime') {
+      setState(() {
+        _terminalLogs.add(
+          '[runtime] running: ${_localRuntimeStatus.isRunning}',
+        );
+        _terminalLogs.add(
+          '[runtime] shell: ${_localRuntimeStatus.shellRunning}',
+        );
+        _terminalLogs.add(
+          '[runtime] workspace: ${_localRuntimeStatus.activeWorkspacePath.isEmpty ? 'not prepared' : _localRuntimeStatus.activeWorkspacePath}',
+        );
+      });
+      _persistState();
+      return;
+    }
+
+    if (Platform.isAndroid && _localRuntimeStatus.supported) {
+      unawaited(_sendShellInput(cmd));
+      return;
+    }
 
     setState(() {
       _terminalLogs.add('\$ $cmd');
@@ -9707,6 +9897,15 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                       ),
                     ),
                   ),
+                  Text(
+                    _localShellSnapshot.isRunning ? 'shell on' : 'shell off',
+                    style: const TextStyle(
+                      color: Color(0xFF7AD7A0),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   TextButton(
                     onPressed: () {
                       setState(
@@ -10373,6 +10572,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     final lastError = _localRuntimeStatus.lastError;
     final fileCount = _localRuntimeStatus.mirroredFileCount;
     final directoryCount = _localRuntimeStatus.mirroredDirectoryCount;
+    final shellRunning = _localRuntimeStatus.shellRunning;
+    final shellWorkingDirectory = _localRuntimeStatus.shellWorkingDirectory;
+    final shellLastError = _localRuntimeStatus.shellLastError;
 
     return _PanelCard(
       child: Column(
@@ -10425,6 +10627,17 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                 icon: const Icon(Icons.copy_all_rounded),
                 label: const Text('Mirror Workspace'),
               ),
+              OutlinedButton.icon(
+                onPressed: !supported
+                    ? null
+                    : (shellRunning ? _stopShellSession : _startShellSession),
+                icon: Icon(
+                  shellRunning
+                      ? Icons.terminal_rounded
+                      : Icons.play_circle_outline_rounded,
+                ),
+                label: Text(shellRunning ? 'Stop Shell' : 'Start Shell'),
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -10458,6 +10671,25 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             Text(
               'Mirrored items: $fileCount files, $directoryCount directories',
               style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Text(
+            shellRunning ? 'Shell session: running' : 'Shell session: stopped',
+            style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+          ),
+          if (shellWorkingDirectory.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Shell cwd: $shellWorkingDirectory',
+              style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+            ),
+          ],
+          if (shellLastError.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Shell error: $shellLastError',
+              style: const TextStyle(fontSize: 11, color: Colors.redAccent),
             ),
           ],
           if (lastError.isNotEmpty) ...[

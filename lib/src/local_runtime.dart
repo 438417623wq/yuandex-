@@ -10,6 +10,9 @@ class LocalRuntimeStatusSnapshot {
     this.lastError = '',
     this.mirroredFileCount = 0,
     this.mirroredDirectoryCount = 0,
+    this.shellRunning = false,
+    this.shellWorkingDirectory = '',
+    this.shellLastError = '',
   });
 
   const LocalRuntimeStatusSnapshot.unsupported()
@@ -22,7 +25,10 @@ class LocalRuntimeStatusSnapshot {
       lastPreparedProjectPath = '',
       lastError = '',
       mirroredFileCount = 0,
-      mirroredDirectoryCount = 0;
+      mirroredDirectoryCount = 0,
+      shellRunning = false,
+      shellWorkingDirectory = '',
+      shellLastError = '';
 
   final bool supported;
   final bool isRunning;
@@ -34,6 +40,9 @@ class LocalRuntimeStatusSnapshot {
   final String lastError;
   final int mirroredFileCount;
   final int mirroredDirectoryCount;
+  final bool shellRunning;
+  final String shellWorkingDirectory;
+  final String shellLastError;
 
   bool get hasWorkspace => activeWorkspacePath.trim().isNotEmpty;
 
@@ -57,6 +66,9 @@ class LocalRuntimeStatusSnapshot {
     String? lastError,
     int? mirroredFileCount,
     int? mirroredDirectoryCount,
+    bool? shellRunning,
+    String? shellWorkingDirectory,
+    String? shellLastError,
   }) {
     return LocalRuntimeStatusSnapshot(
       supported: supported ?? this.supported,
@@ -71,6 +83,10 @@ class LocalRuntimeStatusSnapshot {
       mirroredFileCount: mirroredFileCount ?? this.mirroredFileCount,
       mirroredDirectoryCount:
           mirroredDirectoryCount ?? this.mirroredDirectoryCount,
+      shellRunning: shellRunning ?? this.shellRunning,
+      shellWorkingDirectory:
+          shellWorkingDirectory ?? this.shellWorkingDirectory,
+      shellLastError: shellLastError ?? this.shellLastError,
     );
   }
 
@@ -102,6 +118,59 @@ class LocalRuntimeStatusSnapshot {
       lastError: readString('lastError'),
       mirroredFileCount: readInt('mirroredFileCount'),
       mirroredDirectoryCount: readInt('mirroredDirectoryCount'),
+      shellRunning: readBool('shellRunning'),
+      shellWorkingDirectory: readString('shellWorkingDirectory'),
+      shellLastError: readString('shellLastError'),
+    );
+  }
+}
+
+class LocalShellSnapshot {
+  const LocalShellSnapshot({
+    required this.supported,
+    required this.isRunning,
+    this.workingDirectory = '',
+    this.lastError = '',
+    this.lines = const <String>[],
+  });
+
+  const LocalShellSnapshot.empty()
+    : supported = false,
+      isRunning = false,
+      workingDirectory = '',
+      lastError = '',
+      lines = const <String>[];
+
+  final bool supported;
+  final bool isRunning;
+  final String workingDirectory;
+  final String lastError;
+  final List<String> lines;
+
+  static LocalShellSnapshot fromMap(Map<Object?, Object?> map) {
+    bool readBool(String key) {
+      final value = map[key];
+      if (value is bool) return value;
+      final text = '${value ?? ''}'.trim().toLowerCase();
+      return text == 'true' || text == '1';
+    }
+
+    String readString(String key) => '${map[key] ?? ''}'.trim();
+
+    List<String> readLines(String key) {
+      final value = map[key];
+      if (value is List) {
+        return value.map((item) => item.toString()).toList();
+      }
+      return const <String>[];
+    }
+
+    return LocalShellSnapshot(
+      supported: readBool('supported'),
+      isRunning: readBool('isRunning'),
+      workingDirectory: readString('workingDirectory'),
+      lastError: readString('lastError'),
+      lines: readLines('lines'),
     );
   }
 }

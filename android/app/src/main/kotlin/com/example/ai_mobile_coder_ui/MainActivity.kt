@@ -176,6 +176,31 @@ class MainActivity : FlutterActivity() {
                         }
                     }
 
+                    "getShellSnapshot" -> {
+                        result.success(LocalShellSessionManager.getSnapshot(this))
+                    }
+
+                    "startShellSession" -> {
+                        result.success(LocalShellSessionManager.startSession(this))
+                    }
+
+                    "stopShellSession" -> {
+                        result.success(LocalShellSessionManager.stopSession(this))
+                    }
+
+                    "clearShellBuffer" -> {
+                        result.success(LocalShellSessionManager.clearBuffer(this))
+                    }
+
+                    "sendShellInput" -> {
+                        val input = call.argument<String>("input").orEmpty()
+                        if (input.isBlank()) {
+                            result.error("invalid_args", "input is required.", null)
+                        } else {
+                            result.success(LocalShellSessionManager.sendInput(this, input))
+                        }
+                    }
+
                     else -> result.notImplemented()
                 }
             } catch (e: Exception) {

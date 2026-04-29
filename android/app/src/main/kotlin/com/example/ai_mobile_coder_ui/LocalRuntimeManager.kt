@@ -29,6 +29,9 @@ object LocalRuntimeManager {
     fun getStatus(context: Context): Map<String, Any> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         ensureRuntimeDirectories(context)
+        val shellSnapshot = LocalShellSessionManager.getSnapshot(context)
+        val shellWorkingDirectory = shellSnapshot["workingDirectory"]?.toString().orEmpty()
+        val shellLastError = shellSnapshot["lastError"]?.toString().orEmpty()
         return linkedMapOf(
             "supported" to true,
             "isRunning" to prefs.getBoolean(KEY_RUNNING, false),
@@ -39,7 +42,10 @@ object LocalRuntimeManager {
             "lastPreparedProjectPath" to prefs.getString(KEY_LAST_PREPARED_PROJECT_PATH, "").orEmpty(),
             "lastError" to prefs.getString(KEY_LAST_ERROR, "").orEmpty(),
             "mirroredFileCount" to prefs.getInt(KEY_MIRRORED_FILE_COUNT, 0),
-            "mirroredDirectoryCount" to prefs.getInt(KEY_MIRRORED_DIRECTORY_COUNT, 0)
+            "mirroredDirectoryCount" to prefs.getInt(KEY_MIRRORED_DIRECTORY_COUNT, 0),
+            "shellRunning" to (shellSnapshot["isRunning"] == true),
+            "shellWorkingDirectory" to shellWorkingDirectory,
+            "shellLastError" to shellLastError,
         )
     }
 
@@ -58,6 +64,7 @@ object LocalRuntimeManager {
     }
 
     fun stopRuntime(context: Context) {
+        LocalShellSessionManager.stopSession(context)
         stopRuntimeStateOnly(context)
         val intent = Intent(context, LocalRuntimeService::class.java).apply {
             action = LocalRuntimeService.ACTION_STOP
@@ -123,6 +130,20 @@ object LocalRuntimeManager {
 
     private fun workspacesRoot(context: Context): File {
         return File(runtimeRoot(context), "workspaces")
+    }
+
+    fun defaultExecutionDirectory(context: Context): File {
+        ensureRuntimeDirectories(context)
+        return File(runtimeRoot(context), "workspace_boot")
+    }
+
+    fun activeExecutionDirectory(context: Context): File {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val path = prefs.getString(KEY_ACTIVE_WORKSPACE_PATH, "").orEmpty().trim()
+        if (path.isEmpty()) {
+            return defaultExecutionDirectory(context)
+        }
+        return File(path)
     }
 
     private fun clearLastError(context: Context) {
