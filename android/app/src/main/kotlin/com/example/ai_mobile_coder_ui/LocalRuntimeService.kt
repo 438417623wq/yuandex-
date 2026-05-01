@@ -1,4 +1,4 @@
-package com.example.ai_mobile_coder_ui
+package com.yuandex
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -58,9 +58,9 @@ class LocalRuntimeService : Service() {
         val status = LocalRuntimeManager.getStatus(this)
         val workspaceId = status["activeWorkspaceId"]?.toString().orEmpty()
         val text = if (workspaceId.isBlank()) {
-            "Local runtime is ready. Workspace mirror not prepared yet."
+            "本地运行时已就绪，尚未准备工作区镜像。"
         } else {
-            "Local runtime is ready. Active workspace: $workspaceId"
+            "本地运行时已就绪，当前工作区：$workspaceId"
         }
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
             ?: Intent(this, MainActivity::class.java)
@@ -71,7 +71,7 @@ class LocalRuntimeService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Local coding runtime")
+            .setContentTitle("本地编程运行时")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(pendingIntent)
@@ -89,10 +89,10 @@ class LocalRuntimeService : Service() {
         if (existing != null) return
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Local coding runtime",
+            "本地编程运行时",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Keeps the local coding runtime alive on Android."
+            description = "在 Android 上保持本地编程运行时存活。"
             setShowBadge(false)
             enableVibration(false)
         }
@@ -100,8 +100,8 @@ class LocalRuntimeService : Service() {
     }
 
     companion object {
-        const val ACTION_START = "com.example.ai_mobile_coder_ui.local_runtime.START"
-        const val ACTION_STOP = "com.example.ai_mobile_coder_ui.local_runtime.STOP"
+        const val ACTION_START = "com.yuandex.local_runtime.START"
+        const val ACTION_STOP = "com.yuandex.local_runtime.STOP"
 
         private const val CHANNEL_ID = "local_coding_runtime_channel"
         private const val NOTIFICATION_ID = 90212

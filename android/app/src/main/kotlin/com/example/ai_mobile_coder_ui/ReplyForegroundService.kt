@@ -1,4 +1,4 @@
-package com.example.ai_mobile_coder_ui
+package com.yuandex
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -122,9 +122,9 @@ class ReplyForegroundService : Service() {
     }
 
     companion object {
-        const val ACTION_START = "com.example.ai_mobile_coder_ui.reply_guard.START"
-        const val ACTION_UPDATE = "com.example.ai_mobile_coder_ui.reply_guard.UPDATE"
-        const val ACTION_STOP = "com.example.ai_mobile_coder_ui.reply_guard.STOP"
+        const val ACTION_START = "com.yuandex.reply_guard.START"
+        const val ACTION_UPDATE = "com.yuandex.reply_guard.UPDATE"
+        const val ACTION_STOP = "com.yuandex.reply_guard.STOP"
 
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_TEXT = "extra_text"

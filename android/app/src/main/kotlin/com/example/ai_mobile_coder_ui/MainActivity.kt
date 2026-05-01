@@ -1,4 +1,4 @@
-package com.example.ai_mobile_coder_ui
+package com.yuandex
 
 import android.Manifest
 import android.content.Context
@@ -15,6 +15,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import kotlin.concurrent.thread
 
 class MainActivity : FlutterActivity() {
     private var pendingNotificationPermissionResult: MethodChannel.Result? = null
@@ -23,6 +24,8 @@ class MainActivity : FlutterActivity() {
         private const val STORAGE_CHANNEL = "ai_mobile_coder_ui/storage_access"
         private const val BACKGROUND_GUARD_CHANNEL = "ai_mobile_coder_ui/background_guard"
         private const val LOCAL_RUNTIME_CHANNEL = "ai_mobile_coder_ui/local_runtime"
+        private const val RUNTIME_BACKENDS_CHANNEL = "ai_mobile_coder_ui/runtime_backends"
+        private const val EMBEDDED_DEV_TOOLKIT_CHANNEL = "ai_mobile_coder_ui/embedded_dev_toolkit"
         private const val REQUEST_CODE_POST_NOTIFICATIONS = 31041
     }
 
@@ -149,17 +152,35 @@ class MainActivity : FlutterActivity() {
             try {
                 when (call.method) {
                     "getRuntimeStatus" -> {
-                        result.success(LocalRuntimeManager.getStatus(this))
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "local_runtime_error",
+                            workerName = "local-runtime-status",
+                        ) {
+                            LocalRuntimeManager.getStatus(this)
+                        }
                     }
 
                     "startRuntime" -> {
-                        LocalRuntimeManager.startRuntime(this)
-                        result.success(LocalRuntimeManager.getStatus(this))
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "local_runtime_error",
+                            workerName = "local-runtime-start",
+                        ) {
+                            LocalRuntimeManager.startRuntime(this)
+                            LocalRuntimeManager.getStatus(this)
+                        }
                     }
 
                     "stopRuntime" -> {
-                        LocalRuntimeManager.stopRuntime(this)
-                        result.success(LocalRuntimeManager.getStatus(this))
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "local_runtime_error",
+                            workerName = "local-runtime-stop",
+                        ) {
+                            LocalRuntimeManager.stopRuntime(this)
+                            LocalRuntimeManager.getStatus(this)
+                        }
                     }
 
                     "prepareWorkspace" -> {
@@ -167,29 +188,57 @@ class MainActivity : FlutterActivity() {
                         if (projectRootPath.isBlank()) {
                             result.error("invalid_args", "projectRootPath is required.", null)
                         } else {
-                            result.success(
+                            runAsyncResult(
+                                result = result,
+                                errorCode = "local_runtime_error",
+                                workerName = "local-runtime-prepare",
+                            ) {
                                 LocalRuntimeManager.prepareWorkspace(
                                     context = this,
                                     projectRootPath = projectRootPath
                                 )
-                            )
+                            }
                         }
                     }
 
                     "getShellSnapshot" -> {
-                        result.success(LocalShellSessionManager.getSnapshot(this))
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "local_runtime_error",
+                            workerName = "local-shell-snapshot",
+                        ) {
+                            LocalShellSessionManager.getSnapshot(this)
+                        }
                     }
 
                     "startShellSession" -> {
-                        result.success(LocalShellSessionManager.startSession(this))
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "local_runtime_error",
+                            workerName = "local-shell-start",
+                        ) {
+                            LocalShellSessionManager.startSession(this)
+                        }
                     }
 
                     "stopShellSession" -> {
-                        result.success(LocalShellSessionManager.stopSession(this))
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "local_runtime_error",
+                            workerName = "local-shell-stop",
+                        ) {
+                            LocalShellSessionManager.stopSession(this)
+                        }
                     }
 
                     "clearShellBuffer" -> {
-                        result.success(LocalShellSessionManager.clearBuffer(this))
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "local_runtime_error",
+                            workerName = "local-shell-clear",
+                        ) {
+                            LocalShellSessionManager.clearBuffer(this)
+                        }
                     }
 
                     "sendShellInput" -> {
@@ -197,7 +246,36 @@ class MainActivity : FlutterActivity() {
                         if (input.isBlank()) {
                             result.error("invalid_args", "input is required.", null)
                         } else {
-                            result.success(LocalShellSessionManager.sendInput(this, input))
+                            runAsyncResult(
+                                result = result,
+                                errorCode = "local_runtime_error",
+                                workerName = "local-shell-input",
+                            ) {
+                                LocalShellSessionManager.sendInput(this, input)
+                            }
+                        }
+                    }
+
+                    "executeCommand" -> {
+                        val command = call.argument<String>("command").orEmpty()
+                        if (command.isBlank()) {
+                            result.error("invalid_args", "command is required.", null)
+                        } else {
+                            val timeoutMs = call.argument<Number>("timeoutMs")?.toLong() ?: 20000L
+                            val maxOutputBytes =
+                                call.argument<Number>("maxOutputBytes")?.toInt() ?: 131072
+                            runAsyncResult(
+                                result = result,
+                                errorCode = "local_runtime_error",
+                                workerName = "local-shell-command",
+                            ) {
+                                LocalShellSessionManager.executeCommand(
+                                    context = this,
+                                    command = command,
+                                    timeoutMs = timeoutMs,
+                                    maxOutputBytes = maxOutputBytes,
+                                )
+                            }
                         }
                     }
 
@@ -206,6 +284,177 @@ class MainActivity : FlutterActivity() {
             } catch (e: Exception) {
                 LocalRuntimeManager.recordLastError(this, e.message ?: "Unknown local runtime error")
                 result.error("local_runtime_error", e.message, null)
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            RUNTIME_BACKENDS_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "getBackendStatus" -> {
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "runtime_backends_error",
+                            workerName = "runtime-backend-status",
+                        ) {
+                            RuntimeBackendsManager.getBackendStatus(this)
+                        }
+                    }
+
+                    "openBackendApp" -> {
+                        val backend = call.argument<String>("backend").orEmpty()
+                        result.success(RuntimeBackendsManager.openBackendApp(this, backend))
+                    }
+
+                    "executeTermuxCommand" -> {
+                        val command = call.argument<String>("command").orEmpty()
+                        if (command.isBlank()) {
+                            result.error("invalid_args", "command is required.", null)
+                        } else {
+                            val workingDirectory =
+                                call.argument<String>("workingDirectory").orEmpty()
+                            val renderedCommand =
+                                call.argument<String>("commandTemplate").orEmpty()
+                            val timeoutMs =
+                                call.argument<Number>("timeoutMs")?.toLong() ?: 20000L
+                            val maxOutputBytes =
+                                call.argument<Number>("maxOutputBytes")?.toInt() ?: 131072
+                            thread(name = "termux-command") {
+                                val response = RuntimeBackendsManager.executeTermuxCommand(
+                                    context = this,
+                                    command = command,
+                                    renderedCommand = renderedCommand,
+                                    workingDirectory = workingDirectory,
+                                    timeoutMs = timeoutMs,
+                                    maxOutputBytes = maxOutputBytes,
+                                )
+                                runOnUiThread { result.success(response) }
+                            }
+                        }
+                    }
+
+                    "installApkWithSystem" -> {
+                        val apkPath = call.argument<String>("apkPath").orEmpty()
+                        result.success(RuntimeBackendsManager.installApkWithSystem(this, apkPath))
+                    }
+
+                    "installApkWithRoot" -> {
+                        val apkPath = call.argument<String>("apkPath").orEmpty()
+                        val replace = call.argument<Boolean>("replace") ?: true
+                        val grantAll = call.argument<Boolean>("grantAll") ?: false
+                        val timeoutMs = call.argument<Number>("timeoutMs")?.toLong() ?: 60000L
+                        val maxOutputBytes =
+                            call.argument<Number>("maxOutputBytes")?.toInt() ?: 196608
+                        thread(name = "root-install") {
+                            val response = RuntimeBackendsManager.installApkWithRoot(
+                                apkPath = apkPath,
+                                replace = replace,
+                                grantAll = grantAll,
+                                timeoutMs = timeoutMs,
+                                maxOutputBytes = maxOutputBytes,
+                            )
+                            runOnUiThread { result.success(response) }
+                        }
+                    }
+
+                    "captureSystemLogcat" -> {
+                        val filterSpec = call.argument<String>("filterSpec").orEmpty()
+                        val clearBefore = call.argument<Boolean>("clearBefore") ?: false
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "runtime_backends_error",
+                            workerName = "system-logcat",
+                        ) {
+                            RuntimeBackendsManager.captureSystemLogcat(
+                                filterSpec = filterSpec,
+                                clearBefore = clearBefore,
+                            )
+                        }
+                    }
+
+                    "captureRootLogcat" -> {
+                        val filterSpec = call.argument<String>("filterSpec").orEmpty()
+                        val clearBefore = call.argument<Boolean>("clearBefore") ?: false
+                        val timeoutMs = call.argument<Number>("timeoutMs")?.toLong() ?: 20000L
+                        val maxOutputBytes =
+                            call.argument<Number>("maxOutputBytes")?.toInt() ?: 262144
+                        thread(name = "root-logcat") {
+                            val response = RuntimeBackendsManager.captureRootLogcat(
+                                filterSpec = filterSpec,
+                                clearBefore = clearBefore,
+                                timeoutMs = timeoutMs,
+                                maxOutputBytes = maxOutputBytes,
+                            )
+                            runOnUiThread { result.success(response) }
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            } catch (e: Exception) {
+                result.error("runtime_backends_error", e.message, null)
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            EMBEDDED_DEV_TOOLKIT_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "getToolkitStatus" -> {
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "embedded_dev_toolkit_error",
+                            workerName = "embedded-toolkit-status",
+                        ) {
+                            EmbeddedDevToolkitManager.getStatus(this)
+                        }
+                    }
+
+                    "inspectGitRepository" -> {
+                        val repoPath = call.argument<String>("repoPath").orEmpty()
+                        runAsyncResult(
+                            result = result,
+                            errorCode = "embedded_dev_toolkit_error",
+                            workerName = "embedded-git-inspect",
+                        ) {
+                            EmbeddedDevToolkitManager.inspectGitRepository(
+                                context = this,
+                                repoPath = repoPath,
+                            )
+                        }
+                    }
+
+                    "decompileApkWithEmbeddedJadx" -> {
+                        val apkPath = call.argument<String>("apkPath").orEmpty()
+                        val outputLabel = call.argument<String>("outputLabel").orEmpty()
+                        thread(name = "embedded-jadx") {
+                            val response = EmbeddedDevToolkitManager.decompileApkWithEmbeddedJadx(
+                                context = this,
+                                apkPath = apkPath,
+                                outputLabel = outputLabel,
+                            )
+                            runOnUiThread { result.success(response) }
+                        }
+                    }
+
+                    "verifyApkSignature" -> {
+                        val apkPath = call.argument<String>("apkPath").orEmpty()
+                        thread(name = "embedded-apksig") {
+                            val response = EmbeddedDevToolkitManager.verifyApkSignature(
+                                apkPath = apkPath,
+                            )
+                            runOnUiThread { result.success(response) }
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            } catch (e: Exception) {
+                result.error("embedded_dev_toolkit_error", e.message, null)
             }
         }
     }
@@ -247,6 +496,28 @@ class MainActivity : FlutterActivity() {
             arrayOf(Manifest.permission.POST_NOTIFICATIONS),
             REQUEST_CODE_POST_NOTIFICATIONS
         )
+    }
+
+    private fun runAsyncResult(
+        result: MethodChannel.Result,
+        errorCode: String,
+        workerName: String,
+        block: () -> Any?,
+    ) {
+        thread(name = workerName) {
+            try {
+                val value = block()
+                runOnUiThread { result.success(value) }
+            } catch (error: Exception) {
+                if (errorCode == "local_runtime_error") {
+                    LocalRuntimeManager.recordLastError(
+                        this,
+                        error.message ?: "Unknown local runtime error"
+                    )
+                }
+                runOnUiThread { result.error(errorCode, error.message, null) }
+            }
+        }
     }
 
     private fun startReplyGuard(call: MethodCall) {

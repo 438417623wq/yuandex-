@@ -5,7 +5,9 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -30,6 +32,12 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   static const MethodChannel _localRuntimeChannel = MethodChannel(
     'ai_mobile_coder_ui/local_runtime',
   );
+  static const MethodChannel _runtimeBackendsChannel = MethodChannel(
+    'ai_mobile_coder_ui/runtime_backends',
+  );
+  static const MethodChannel _embeddedDevToolkitChannel = MethodChannel(
+    'ai_mobile_coder_ui/embedded_dev_toolkit',
+  );
   static const String _defaultAssistantGreeting =
       '你好，我是你的移动端 AI 编程助手。先告诉我你想修改什么，我会给出补丁建议。';
   static const String _defaultConversationTitle = '新消息';
@@ -50,6 +58,10 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   static const String _prefsActiveConversationPinned =
       'state.chat.activePinned.v1';
   static const String _prefsApiConnectionsCollapsed = 'state.api.collapsed.v1';
+  static const String _prefsSettingsExpandedSections =
+      'state.settings.expandedSections.v1';
+  static const String _prefsReplyStructureSections =
+      'state.reply.structure.sections.v1';
   static const String _prefsGodotMcpEnabled = 'state.godotMcp.enabled.v1';
   static const String _prefsGodotMcpBridgeUrl = 'state.godotMcp.bridgeUrl.v1';
   static const String _prefsGodotMcpBridgeToken =
@@ -58,6 +70,46 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       'state.download.asset.maxBytes.v1';
   static const String _prefsBackgroundGuardEnabled =
       'state.background.guard.enabled.v1';
+  static const String _prefsAndroidToolkitApkPath =
+      'state.androidToolkit.apkPath.v1';
+  static const String _prefsAndroidToolkitReverseLabel =
+      'state.androidToolkit.reverseLabel.v1';
+  static const String _prefsAndroidToolkitJadxQuery =
+      'state.androidToolkit.jadxQuery.v1';
+  static const String _prefsAndroidToolkitGradleTask =
+      'state.androidToolkit.gradleTask.v1';
+  static const String _prefsAndroidToolkitInstallApkPath =
+      'state.androidToolkit.installApkPath.v1';
+  static const String _prefsAndroidToolkitLogcatFilter =
+      'state.androidToolkit.logcatFilter.v1';
+  static const String _prefsAndroidToolkitKeystorePath =
+      'state.androidToolkit.keystorePath.v1';
+  static const String _prefsAndroidToolkitKeystoreAlias =
+      'state.androidToolkit.keystoreAlias.v1';
+  static const String _prefsAndroidToolkitStorePassword =
+      'state.androidToolkit.storePassword.v1';
+  static const String _prefsAndroidToolkitKeyPassword =
+      'state.androidToolkit.keyPassword.v1';
+  static const String _prefsAndroidToolkitAdbCommand =
+      'state.androidToolkit.adbCommand.v1';
+  static const String _prefsAndroidToolkitApktoolCommand =
+      'state.androidToolkit.apktoolCommand.v1';
+  static const String _prefsAndroidToolkitJadxCommand =
+      'state.androidToolkit.jadxCommand.v1';
+  static const String _prefsAndroidToolkitApksignerCommand =
+      'state.androidToolkit.apksignerCommand.v1';
+  static const String _prefsAndroidToolkitZipalignCommand =
+      'state.androidToolkit.zipalignCommand.v1';
+  static const String _prefsAndroidToolkitGradleCommand =
+      'state.androidToolkit.gradleCommand.v1';
+  static const String _prefsPrimaryExecutionBackend =
+      'state.runtimeBackends.primaryExecution.v1';
+  static const String _prefsDeviceOperationsBackend =
+      'state.runtimeBackends.deviceOperations.v1';
+  static const String _prefsTermuxWorkdir =
+      'state.runtimeBackends.termux.workdir.v1';
+  static const String _prefsTermuxCommandTemplate =
+      'state.runtimeBackends.termux.commandTemplate.v1';
   static const String _aboutAuthor = '开心小元';
   static const String _aboutBilibiliUrl = 'https://b23.tv/gJ3rHs3';
   static const int _maxRollbackRounds = 8;
@@ -76,6 +128,24 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   final _fileContentController = TextEditingController();
   final _godotBridgeUrlController = TextEditingController();
   final _godotBridgeTokenController = TextEditingController();
+  final _androidToolkitApkPathController = TextEditingController();
+  final _androidToolkitReverseLabelController = TextEditingController();
+  final _androidToolkitJadxQueryController = TextEditingController();
+  final _androidToolkitGradleTaskController = TextEditingController();
+  final _androidToolkitInstallApkPathController = TextEditingController();
+  final _androidToolkitLogcatFilterController = TextEditingController();
+  final _androidToolkitKeystorePathController = TextEditingController();
+  final _androidToolkitKeystoreAliasController = TextEditingController();
+  final _androidToolkitStorePasswordController = TextEditingController();
+  final _androidToolkitKeyPasswordController = TextEditingController();
+  final _androidToolkitAdbCommandController = TextEditingController();
+  final _androidToolkitApktoolCommandController = TextEditingController();
+  final _androidToolkitJadxCommandController = TextEditingController();
+  final _androidToolkitApksignerCommandController = TextEditingController();
+  final _androidToolkitZipalignCommandController = TextEditingController();
+  final _androidToolkitGradleCommandController = TextEditingController();
+  final _termuxWorkdirController = TextEditingController();
+  final _termuxCommandTemplateController = TextEditingController();
 
   final List<ChatMessage> _messages = [
     const ChatMessage(
@@ -136,6 +206,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   final List<_AiRoundRecord> _aiRoundHistory = [];
   Timer? _backgroundGuardTicker;
   Timer? _terminalPoller;
+  Timer? _persistStateDebounce;
   int? _backgroundReplyStartedAtMs;
   String _backgroundReplyProgress = '';
   bool _backgroundGuardActive = false;
@@ -145,6 +216,55 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   bool _loadingLocalRuntimeStatus = false;
   bool _preparingLocalWorkspace = false;
   bool _loadingShellSnapshot = false;
+  bool _loadingMirrorPreview = false;
+  bool _syncingMirrorToSource = false;
+  bool _runningRuntimeWorkbenchCommand = false;
+  String _runtimeWorkbenchOutput = '';
+  String _mirrorPreviewSummary = '暂未生成镜像差异预览。';
+  final List<_MirrorChangeEntry> _mirrorPreviewEntries = <_MirrorChangeEntry>[];
+  RuntimeBackendStatusSnapshot _runtimeBackendStatus =
+      const RuntimeBackendStatusSnapshot.empty();
+  bool _loadingRuntimeBackendStatus = false;
+  EmbeddedDevToolkitStatusSnapshot _embeddedDevToolkitStatus =
+      const EmbeddedDevToolkitStatusSnapshot.empty();
+  bool _loadingEmbeddedDevToolkitStatus = false;
+  String _primaryExecutionBackend = 'native';
+  String _deviceOperationsBackend = 'native';
+  bool _runningAndroidToolkitAction = false;
+  String _androidToolkitStatus = '安卓工具箱空闲中。';
+  String _androidToolkitOutput = '';
+  final List<_AgentProgressEntry> _agentProgressEntries =
+      <_AgentProgressEntry>[];
+  final List<_AgentToolEvent> _agentToolEvents = <_AgentToolEvent>[];
+  String _agentLiveStatus = '空闲';
+  String _agentPlanSummary = '';
+  String _agentExecutionPhase = '待命';
+  String _agentConvergenceSummary = '';
+  String _agentConvergenceWarning = '';
+  int _agentCurrentRound = 0;
+  int _agentMaxRounds = 0;
+  bool _agentSummaryMode = false;
+  final Map<String, int> _agentToolFamilyCounts = <String, int>{};
+  bool _agentProgressCollapsed = false;
+  bool _agentToolsCollapsed = false;
+  final Set<String> _expandedAgentToolEventIds = <String>{};
+  final Set<String> _expandedStructuredMessageSections = <String>{};
+  final Set<String> _expandedSettingsSections = <String>{
+    'solution_overview',
+    'components',
+    'embedded_dev_stack',
+    'project',
+    'local_runtime',
+  };
+  final Set<String> _enabledReplyStructureSections = <String>{
+    _replySectionReasoning,
+    _replySectionContent,
+    _replySectionToolCalls,
+    _replySectionAgentProgress,
+    _replySectionMetadata,
+    _replySectionToolActivity,
+  };
+  int _selectedTabIndex = 0;
 
   static const Set<String> _chatCapableProviders = {
     'openai',
@@ -181,8 +301,22 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     'high',
     'very_high',
   ];
+  static const Set<String> _mirrorSyncIgnoredTopLevelDirs = {
+    '.git',
+    '.dart_tool',
+    'build',
+    '.gradle',
+    '.idea',
+    'node_modules',
+  };
   static const String _browserLikeUserAgent =
       'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36 AI-Mobile-Coder/1.0';
+  static const String _replySectionReasoning = 'reasoning';
+  static const String _replySectionContent = 'content';
+  static const String _replySectionToolCalls = 'tool_calls';
+  static const String _replySectionAgentProgress = 'agent_progress';
+  static const String _replySectionMetadata = 'metadata';
+  static const String _replySectionToolActivity = 'tool_activity';
   static const Map<String, String> _reasoningEffortLabelMap = {
     'low': '低',
     'medium': '中',
@@ -196,6 +330,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     _activeConversationId = _createConversationId();
     unawaited(_restoreState());
     unawaited(_refreshLocalRuntimeStatus());
+    unawaited(_refreshRuntimeBackendStatus());
+    unawaited(_refreshEmbeddedDevToolkitStatus());
   }
 
   @override
@@ -205,6 +341,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     }
     _backgroundGuardTicker?.cancel();
     _terminalPoller?.cancel();
+    _persistStateDebounce?.cancel();
     if (_backgroundGuardActive) {
       unawaited(_stopBackgroundReplyGuard(force: true));
     }
@@ -222,6 +359,24 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     _fileContentController.dispose();
     _godotBridgeUrlController.dispose();
     _godotBridgeTokenController.dispose();
+    _androidToolkitApkPathController.dispose();
+    _androidToolkitReverseLabelController.dispose();
+    _androidToolkitJadxQueryController.dispose();
+    _androidToolkitGradleTaskController.dispose();
+    _androidToolkitInstallApkPathController.dispose();
+    _androidToolkitLogcatFilterController.dispose();
+    _androidToolkitKeystorePathController.dispose();
+    _androidToolkitKeystoreAliasController.dispose();
+    _androidToolkitStorePasswordController.dispose();
+    _androidToolkitKeyPasswordController.dispose();
+    _androidToolkitAdbCommandController.dispose();
+    _androidToolkitApktoolCommandController.dispose();
+    _androidToolkitJadxCommandController.dispose();
+    _androidToolkitApksignerCommandController.dispose();
+    _androidToolkitZipalignCommandController.dispose();
+    _androidToolkitGradleCommandController.dispose();
+    _termuxWorkdirController.dispose();
+    _termuxCommandTemplateController.dispose();
     super.dispose();
   }
 
@@ -296,6 +451,240 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           _loadingLocalRuntimeStatus = false;
         });
       }
+    }
+  }
+
+  String _primaryBackendLabel(String backend) {
+    switch (backend) {
+      case 'termux':
+        return 'Termux / PRoot';
+      case 'native':
+      default:
+        return '原生 Shell';
+    }
+  }
+
+  String _deviceBackendLabel(String backend) {
+    switch (backend) {
+      case 'root':
+        return 'Root / SU';
+      case 'shizuku':
+        return 'Shizuku / 系统';
+      case 'native':
+      default:
+        return 'CLI / ADB';
+    }
+  }
+
+  void _setRuntimeBackendStatusFromRaw(
+    dynamic raw, {
+    bool withSetState = true,
+  }) {
+    final mapped = raw is Map
+        ? RuntimeBackendStatusSnapshot.fromMap(
+            raw.map((key, value) => MapEntry(key, value)),
+          )
+        : const RuntimeBackendStatusSnapshot.empty();
+    if (!mounted || !withSetState) {
+      _runtimeBackendStatus = mapped;
+      return;
+    }
+    setState(() {
+      _runtimeBackendStatus = mapped;
+    });
+  }
+
+  void _setEmbeddedDevToolkitStatusFromRaw(
+    dynamic raw, {
+    bool withSetState = true,
+  }) {
+    final mapped = raw is Map
+        ? EmbeddedDevToolkitStatusSnapshot.fromMap(
+            raw.map((key, value) => MapEntry(key, value)),
+          )
+        : const EmbeddedDevToolkitStatusSnapshot.empty();
+    if (!mounted || !withSetState) {
+      _embeddedDevToolkitStatus = mapped;
+      return;
+    }
+    setState(() {
+      _embeddedDevToolkitStatus = mapped;
+    });
+  }
+
+  Future<void> _refreshRuntimeBackendStatus({
+    bool showFailureSnackBar = false,
+  }) async {
+    if (!Platform.isAndroid) {
+      if (!mounted) {
+        _runtimeBackendStatus = const RuntimeBackendStatusSnapshot.empty();
+        return;
+      }
+      setState(() {
+        _runtimeBackendStatus = const RuntimeBackendStatusSnapshot.empty();
+      });
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _loadingRuntimeBackendStatus = true;
+      });
+    } else {
+      _loadingRuntimeBackendStatus = true;
+    }
+
+    try {
+      final raw = await _runtimeBackendsChannel.invokeMethod<dynamic>(
+        'getBackendStatus',
+      );
+      _setRuntimeBackendStatusFromRaw(raw);
+    } catch (error) {
+      if (!mounted) {
+        _runtimeBackendStatus = RuntimeBackendStatusSnapshot(
+          supported: true,
+          nativeAvailable: true,
+          lastError: '$error',
+        );
+      } else {
+        setState(() {
+          _runtimeBackendStatus = RuntimeBackendStatusSnapshot(
+            supported: true,
+            nativeAvailable: true,
+            lastError: '$error',
+          );
+        });
+      }
+      if (showFailureSnackBar && mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('加载执行后端状态失败：$error')));
+      }
+    } finally {
+      if (!mounted) {
+        _loadingRuntimeBackendStatus = false;
+      } else {
+        setState(() {
+          _loadingRuntimeBackendStatus = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _refreshEmbeddedDevToolkitStatus({
+    bool showFailureSnackBar = false,
+  }) async {
+    if (!Platform.isAndroid) {
+      if (!mounted) {
+        _embeddedDevToolkitStatus =
+            const EmbeddedDevToolkitStatusSnapshot.empty();
+        return;
+      }
+      setState(() {
+        _embeddedDevToolkitStatus =
+            const EmbeddedDevToolkitStatusSnapshot.empty();
+      });
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _loadingEmbeddedDevToolkitStatus = true;
+      });
+    } else {
+      _loadingEmbeddedDevToolkitStatus = true;
+    }
+
+    try {
+      final raw = await _embeddedDevToolkitChannel.invokeMethod<dynamic>(
+        'getToolkitStatus',
+      );
+      _setEmbeddedDevToolkitStatusFromRaw(raw);
+    } catch (error) {
+      if (!mounted) {
+        _embeddedDevToolkitStatus = EmbeddedDevToolkitStatusSnapshot(
+          supported: true,
+          lastError: '$error',
+        );
+      } else {
+        setState(() {
+          _embeddedDevToolkitStatus = EmbeddedDevToolkitStatusSnapshot(
+            supported: true,
+            lastError: '$error',
+          );
+        });
+      }
+      if (showFailureSnackBar && mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('加载内置开发栈失败：$error')));
+      }
+    } finally {
+      if (!mounted) {
+        _loadingEmbeddedDevToolkitStatus = false;
+      } else {
+        setState(() {
+          _loadingEmbeddedDevToolkitStatus = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _openRuntimeBackendApp(String backend) async {
+    if (!Platform.isAndroid) return;
+    final backendLabel = backend == 'shizuku'
+        ? _deviceBackendLabel(backend)
+        : _primaryBackendLabel(backend);
+    try {
+      final opened = await _runtimeBackendsChannel.invokeMethod<bool>(
+        'openBackendApp',
+        <String, dynamic>{'backend': backend},
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            opened == true ? '已打开 $backendLabel。' : '无法打开 $backendLabel。',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('打开后端应用失败：$error')));
+    }
+  }
+
+  Future<void> _testCurrentExecutionBackend() async {
+    try {
+      final result = await _executePrimaryBackendCommand(
+        command: 'pwd && echo BACKEND_OK',
+        timeoutMs: 20000,
+        maxOutputBytes: 65536,
+        requireProjectWorkspace: false,
+      );
+      final output = _formatLocalCommandResult(
+        'Backend Test',
+        result,
+        extra: <String, String>{
+          'primary_backend': _primaryBackendLabel(_primaryExecutionBackend),
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _runtimeWorkbenchOutput = output;
+        _androidToolkitOutput = output;
+        _androidToolkitStatus = result['ok'] == true ? '后端测试已完成。' : '后端测试失败。';
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('后端测试已完成。')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('后端测试失败：$error')));
     }
   }
 
@@ -380,6 +769,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     try {
       if (!_localRuntimeStatus.isRunning) {
         await _startLocalRuntime();
+      }
+      if (_localShellSnapshot.isRunning) {
+        await _stopShellSession();
       }
       final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
         'prepareWorkspace',
@@ -698,6 +1090,21 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     return _reasoningEffortLabelMap[key] ?? '超高';
   }
 
+  bool _isReplySectionEnabled(String sectionId) {
+    return _enabledReplyStructureSections.contains(sectionId);
+  }
+
+  void _setReplySectionEnabled(String sectionId, bool enabled) {
+    setState(() {
+      if (enabled) {
+        _enabledReplyStructureSections.add(sectionId);
+      } else {
+        _enabledReplyStructureSections.remove(sectionId);
+      }
+    });
+    _persistState();
+  }
+
   double _temperatureForReasoningEffort(String raw) {
     switch (_normalizeReasoningEffort(raw)) {
       case 'low':
@@ -869,6 +1276,1322 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         ),
       );
     }
+  }
+
+  void _resetAgentExecutionConsole() {
+    void apply() {
+      _agentProgressEntries.clear();
+      _agentToolEvents.clear();
+      _expandedAgentToolEventIds.clear();
+      _agentLiveStatus = '准备请求模型';
+      _agentPlanSummary = '';
+      _agentExecutionPhase = '规划';
+      _agentConvergenceSummary = '等待首次方案';
+      _agentConvergenceWarning = '';
+      _agentCurrentRound = 0;
+      _agentMaxRounds = 0;
+      _agentSummaryMode = false;
+      _agentToolFamilyCounts.clear();
+    }
+
+    if (!mounted) {
+      apply();
+      return;
+    }
+    setState(apply);
+  }
+
+  void _updateAgentExecutionState({
+    String? phase,
+    String? convergenceSummary,
+    String? convergenceWarning,
+    int? currentRound,
+    int? maxRounds,
+    bool? summaryMode,
+    Map<String, int>? toolFamilyCounts,
+  }) {
+    void apply() {
+      if (phase != null) {
+        _agentExecutionPhase = phase;
+      }
+      if (convergenceSummary != null) {
+        _agentConvergenceSummary = convergenceSummary;
+      }
+      if (convergenceWarning != null) {
+        _agentConvergenceWarning = convergenceWarning;
+      }
+      if (currentRound != null) {
+        _agentCurrentRound = currentRound;
+      }
+      if (maxRounds != null) {
+        _agentMaxRounds = maxRounds;
+      }
+      if (summaryMode != null) {
+        _agentSummaryMode = summaryMode;
+      }
+      if (toolFamilyCounts != null) {
+        _agentToolFamilyCounts
+          ..clear()
+          ..addAll(toolFamilyCounts);
+      }
+    }
+
+    if (!mounted) {
+      apply();
+      return;
+    }
+    setState(apply);
+  }
+
+  void _recordAgentProgress(
+    String title, {
+    String detail = '',
+    bool updateLiveStatus = true,
+  }) {
+    final entry = _AgentProgressEntry(
+      title: title.trim(),
+      detail: detail.trim(),
+      time: _timeNow(),
+    );
+    void apply() {
+      if (updateLiveStatus && entry.title.isNotEmpty) {
+        _agentLiveStatus = entry.title;
+      }
+      _agentProgressEntries.add(entry);
+      if (_agentProgressEntries.length > 24) {
+        _agentProgressEntries.removeAt(0);
+      }
+    }
+
+    if (!mounted) {
+      apply();
+      return;
+    }
+    setState(apply);
+  }
+
+  void _recordAgentToolStart(_ToolCall call) {
+    final entry = _AgentToolEvent(
+      id: call.id,
+      name: call.name,
+      status: 'running',
+      argsPreview: _toolArgsPreview(call.argumentsJson),
+      summary: '等待工具结果',
+      time: _timeNow(),
+      startedAtMs: DateTime.now().millisecondsSinceEpoch,
+      durationMs: null,
+      rawArgs: call.argumentsJson,
+      commandText: _extractCommandPreview(call),
+      stdout: '',
+      stderr: '',
+    );
+    void apply() {
+      _agentToolEvents.removeWhere((item) => item.id == call.id);
+      _agentToolEvents.add(entry);
+      if (_agentToolEvents.length > 20) {
+        _agentToolEvents.removeAt(0);
+      }
+    }
+
+    if (!mounted) {
+      apply();
+      return;
+    }
+    setState(apply);
+  }
+
+  void _recordAgentToolFinish(
+    _ToolCall call,
+    String toolResult, {
+    required String status,
+  }) {
+    var summary = _summarizeForLog(toolResult);
+    var stdout = '';
+    var stderr = '';
+    int? durationMs;
+    try {
+      final decoded = jsonDecode(toolResult);
+      if (decoded is Map) {
+        final errorText = decoded['error']?.toString().trim() ?? '';
+        stdout = decoded['stdout']?.toString() ?? '';
+        stderr = decoded['stderr']?.toString() ?? '';
+        if (errorText.isNotEmpty) {
+          summary = errorText;
+        } else if (decoded['stdout'] is String &&
+            (decoded['stdout'] as String).trim().isNotEmpty) {
+          summary = _summarizeForLog(decoded['stdout'].toString());
+        } else if (decoded['content'] is String &&
+            (decoded['content'] as String).trim().isNotEmpty) {
+          summary = _summarizeForLog(decoded['content'].toString());
+        }
+      }
+    } catch (_) {}
+
+    final entry = _AgentToolEvent(
+      id: call.id,
+      name: call.name,
+      status: status,
+      argsPreview: _toolArgsPreview(call.argumentsJson),
+      summary: summary,
+      time: _timeNow(),
+      startedAtMs: DateTime.now().millisecondsSinceEpoch,
+      durationMs: durationMs,
+      rawArgs: call.argumentsJson,
+      commandText: _extractCommandPreview(call),
+      stdout: stdout,
+      stderr: stderr,
+    );
+    void apply() {
+      final index = _agentToolEvents.indexWhere((item) => item.id == call.id);
+      final existing = index >= 0 ? _agentToolEvents[index] : null;
+      final resolvedDurationMs =
+          durationMs ??
+          (existing == null
+              ? null
+              : DateTime.now().millisecondsSinceEpoch - existing.startedAtMs);
+      final resolvedEntry = _AgentToolEvent(
+        id: entry.id,
+        name: entry.name,
+        status: entry.status,
+        argsPreview: entry.argsPreview,
+        summary: entry.summary,
+        time: entry.time,
+        startedAtMs: existing?.startedAtMs ?? entry.startedAtMs,
+        durationMs: resolvedDurationMs,
+        rawArgs: entry.rawArgs,
+        commandText: entry.commandText,
+        stdout: entry.stdout,
+        stderr: entry.stderr,
+      );
+      if (index >= 0) {
+        _agentToolEvents[index] = resolvedEntry;
+      } else {
+        _agentToolEvents.add(resolvedEntry);
+      }
+      if (_agentToolEvents.length > 20) {
+        _agentToolEvents.removeAt(0);
+      }
+    }
+
+    if (!mounted) {
+      apply();
+      return;
+    }
+    setState(apply);
+  }
+
+  String _buildAssistantPlanMessage({
+    required String content,
+    required List<_ToolCall> toolCalls,
+  }) {
+    final trimmedContent = content.trim();
+    if (trimmedContent.isNotEmpty) {
+      return trimmedContent;
+    }
+    final phrases = <String>[];
+    for (final call in toolCalls) {
+      final phrase = _toolPlanPhrase(call.name);
+      if (!phrases.contains(phrase)) {
+        phrases.add(phrase);
+      }
+      if (phrases.length >= 3) break;
+    }
+    if (phrases.isEmpty) {
+      return '我会先检查项目现状，再整理出最合适的处理方案。';
+    }
+    if (phrases.length == 1) {
+      return '我先${phrases.first}，然后把我发现的问题和处理思路整理给你。';
+    }
+    if (phrases.length == 2) {
+      return '我会先${phrases[0]}，再${phrases[1]}，最后给你一个明确结论。';
+    }
+    return '我会先${phrases[0]}，再${phrases[1]}，然后${phrases[2]}，最后给你一个明确结论。';
+  }
+
+  String _buildReasoningSummary({
+    required String content,
+    required List<_ToolCall> toolCalls,
+    String rawReasoning = '',
+  }) {
+    final trimmed = rawReasoning.trim();
+    if (trimmed.isNotEmpty) {
+      return _summarizeForLog(trimmed);
+    }
+    return _buildAssistantPlanMessage(content: content, toolCalls: toolCalls);
+  }
+
+  String _toolPlanPhrase(String toolName) {
+    switch (toolName) {
+      case 'read_file':
+      case 'read_file_part':
+      case 'find_files':
+      case 'file_exists':
+        return '查看相关文件内容';
+      case 'list_files':
+      case 'list_dir':
+        return '梳理项目目录结构';
+      case 'grep_code':
+        return '搜索相关代码位置';
+      case 'replace_in_file':
+      case 'write_file':
+      case 'create_file':
+      case 'create_dir':
+      case 'delete_entry':
+      case 'copy_file':
+      case 'move_file':
+      case 'apply_patch':
+        return '应用所需的代码修改';
+      case 'run_command':
+      case 'android_gradle_build':
+      case 'android_install_apk':
+      case 'android_logcat':
+      case 'android_decompile_apk':
+      case 'android_run_jadx':
+      case 'android_search_jadx':
+      case 'android_rebuild_apk':
+      case 'android_sign_apk':
+      case 'git_status':
+      case 'git_diff':
+      case 'git_log':
+      case 'git_show':
+      case 'shell_session_start':
+      case 'shell_session_stop':
+      case 'shell_session_snapshot':
+      case 'shell_session_input':
+      case 'shell_session_clear':
+        return '执行本地验证命令';
+      case 'download_asset':
+        return '下载需要的资源';
+      case 'web_search':
+        return '联网搜索最新参考信息';
+      case 'fetch_webpage':
+        return '读取目标网页内容';
+      default:
+        return '借助工具检查项目';
+    }
+  }
+
+  String _toolProgressTitle(_ToolCall call) {
+    switch (call.name) {
+      case 'android_gradle_build':
+        return 'Building Android project';
+      case 'android_install_apk':
+        return 'Installing APK';
+      case 'android_logcat':
+        return 'Collecting logcat';
+      case 'android_decompile_apk':
+        return 'Decoding APK with apktool';
+      case 'android_run_jadx':
+        return 'Running JADX';
+      case 'android_search_jadx':
+        return 'Searching JADX output';
+      case 'android_rebuild_apk':
+        return 'Rebuilding APK';
+      case 'android_sign_apk':
+        return 'Signing APK';
+      default:
+        break;
+    }
+    switch (call.name) {
+      case 'read_file':
+      case 'read_file_part':
+        return '正在读取项目文件';
+      case 'list_files':
+      case 'list_dir':
+        return '正在扫描目录';
+      case 'grep_code':
+        return '正在搜索代码';
+      case 'replace_in_file':
+      case 'write_file':
+      case 'create_file':
+      case 'create_dir':
+      case 'delete_entry':
+        return '正在修改文件';
+      case 'run_command':
+        return '正在执行本地命令';
+      case 'download_asset':
+        return '正在下载资源';
+      case 'web_search':
+        return '正在联网搜索';
+      case 'fetch_webpage':
+        return '正在读取网页';
+      default:
+        return '正在调用 ${call.name}';
+    }
+  }
+
+  String _toolFinishStatus(String toolResult, {required bool cached}) {
+    if (cached) return 'cached';
+    try {
+      final decoded = jsonDecode(toolResult);
+      if (decoded is Map) {
+        if (decoded['ok'] == false) return 'failed';
+        if ((decoded['timedOut'] ?? false) == true) return 'failed';
+      }
+    } catch (_) {}
+    return 'done';
+  }
+
+  String _extractCommandPreview(_ToolCall call) {
+    try {
+      final args = _decodeToolArguments(call.argumentsJson);
+      if (call.name == 'run_command') {
+        return args['command']?.toString().trim() ?? '';
+      }
+      if (call.name == 'android_gradle_build') {
+        return args['task']?.toString().trim() ?? '';
+      }
+      if (call.name == 'android_install_apk' ||
+          call.name == 'android_decompile_apk' ||
+          call.name == 'android_run_jadx') {
+        return args['apk_path']?.toString().trim() ?? '';
+      }
+      if (call.name == 'android_search_jadx') {
+        return args['query']?.toString().trim() ?? '';
+      }
+      if (call.name == 'git_show') {
+        return args['ref']?.toString().trim() ?? '';
+      }
+      if (call.name == 'git_diff' || call.name == 'find_files') {
+        return args['path']?.toString().trim() ?? '';
+      }
+      if (call.name == 'shell_session_input') {
+        return args['input']?.toString().trim() ?? '';
+      }
+      if (call.name == 'read_file' || call.name == 'read_file_part') {
+        return args['path']?.toString().trim() ?? '';
+      }
+      if (call.name == 'list_dir' || call.name == 'file_info') {
+        return args['path']?.toString().trim() ?? '';
+      }
+      if (call.name == 'grep_code') {
+        return args['query']?.toString().trim() ?? '';
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  String _toolFamily(String toolName) {
+    switch (toolName) {
+      case 'list_files':
+      case 'list_dir':
+      case 'file_info':
+      case 'find_files':
+        return '目录探索';
+      case 'read_file':
+      case 'read_file_part':
+      case 'file_exists':
+        return '文件阅读';
+      case 'grep_code':
+        return '代码检索';
+      case 'replace_in_file':
+      case 'write_file':
+      case 'create_file':
+      case 'create_dir':
+      case 'delete_entry':
+      case 'copy_file':
+      case 'move_file':
+      case 'apply_patch':
+        return '文件修改';
+      case 'run_command':
+      case 'android_gradle_build':
+      case 'android_install_apk':
+      case 'android_logcat':
+      case 'android_decompile_apk':
+      case 'android_run_jadx':
+      case 'android_search_jadx':
+      case 'android_rebuild_apk':
+      case 'android_sign_apk':
+      case 'shell_session_start':
+      case 'shell_session_stop':
+      case 'shell_session_snapshot':
+      case 'shell_session_input':
+      case 'shell_session_clear':
+      case 'git_status':
+      case 'git_diff':
+      case 'git_log':
+      case 'git_show':
+        return '命令执行';
+      case 'web_search':
+        return '联网搜索';
+      case 'fetch_webpage':
+        return '网页读取';
+      case 'download_asset':
+        return '资源下载';
+      default:
+        return '其他工具';
+    }
+  }
+
+  bool _isExplorationTool(String toolName) {
+    switch (toolName) {
+      case 'list_files':
+      case 'list_dir':
+      case 'file_info':
+      case 'find_files':
+      case 'read_file':
+      case 'read_file_part':
+      case 'file_exists':
+      case 'grep_code':
+      case 'web_search':
+      case 'fetch_webpage':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  int _toolFamilyRoundLimit(String toolName) {
+    switch (_toolFamily(toolName)) {
+      case '目录探索':
+        return 4;
+      case '文件阅读':
+        return 5;
+      case '代码检索':
+        return 4;
+      case '联网搜索':
+        return 3;
+      case '网页读取':
+        return 3;
+      default:
+        return 999;
+    }
+  }
+
+  String _buildPlanningInstruction() {
+    return '''
+先不要调用任何工具，也不要直接给最终答案。
+请先基于当前用户请求给出一段简洁执行方案，内容包括：
+1. 你准备先检查什么
+2. 预计会用到哪些工具
+3. 可能的修改方向
+要求：
+- 用中文回答
+- 控制在 4 句以内
+- 像 Codex 一样先说方案，再进入执行
+''';
+  }
+
+  String _buildExecutionInstruction() {
+    return '''
+你已经给出过执行方案，现在开始执行。
+要求：
+- 优先使用最少必要工具
+- 先小范围定位，再读取关键文件，再修改或验证
+- 不要重复扫描同一目录或重复读取同一片段
+- 一旦信息足够，立即停止探索并输出结论
+''';
+  }
+
+  String _buildSummaryModeInstruction({
+    required int currentRound,
+    required int maxRounds,
+    required String convergenceReason,
+  }) {
+    return '''
+你已进入总结模式（第 $currentRound / $maxRounds 轮）。
+当前收敛提醒：$convergenceReason
+除非缺少唯一关键文件，否则不要继续调用目录扫描、代码检索、文件阅读类工具。
+请优先基于已有结果直接给出：
+1. 你已经确认的事实
+2. 需要修改的方案或补丁
+3. 如果仍缺信息，只允许说明唯一缺少的关键点
+''';
+  }
+
+  String _buildForcedFinalInstruction({
+    required int currentRound,
+    required int maxRounds,
+    required String convergenceReason,
+  }) {
+    return '''
+���������ܽ�غϣ��� $currentRound / $maxRounds �֣���
+��Ҫ�ٵ����κι��ߣ�ֱ��������ս��ۡ�
+�����ǰ̽��δ��ȫ����������ȷ˵����
+- ��ȷ�ϵ���Ϣ
+- ��δȷ�ϵ�����ܵ�ԭ��
+- �����û���һ���ṩ����С������Ϣ
+��ǰֹͣԭ��$convergenceReason
+''';
+  }
+
+  String _buildConvergenceGuardResult({
+    required _ToolCall call,
+    required String reason,
+    required int repeatedCount,
+    required Map<String, int> toolFamilyCounts,
+  }) {
+    return jsonEncode(<String, dynamic>{
+      'ok': false,
+      'action': call.name,
+      'error': reason,
+      'repeat_count': repeatedCount,
+      'next_step': '��ֹͣ������ɢʽ̽�������Ȼ������н���ܽ���ۣ���ֻ����Ψһ�ؼ��ļ���',
+      'tool_family': _toolFamily(call.name),
+      'family_stats': toolFamilyCounts,
+    });
+  }
+
+  Future<void> _copyPlainText(String text, String successMessage) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: trimmed));
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(successMessage)));
+  }
+
+  Future<void> _ensureLocalRuntimeReady({
+    bool requireProjectWorkspace = false,
+  }) async {
+    if (!Platform.isAndroid || !_localRuntimeStatus.supported) {
+      throw Exception('Android local runtime is not available on this device');
+    }
+    if (!_localRuntimeStatus.isRunning) {
+      await _startLocalRuntime();
+    }
+    if (!requireProjectWorkspace) {
+      return;
+    }
+    final projectRootPath = _projectRootPath;
+    if (projectRootPath == null || projectRootPath.trim().isEmpty) {
+      throw Exception('This action requires a selected project folder');
+    }
+    final activeProject = _localRuntimeStatus.lastPreparedProjectPath.trim();
+    if (!_localRuntimeStatus.hasWorkspace || activeProject != projectRootPath) {
+      await _prepareLocalWorkspaceMirror();
+    }
+  }
+
+  Future<void> _ensureLocalRuntimeWorkspaceReadyForTools() async {
+    await _ensureLocalRuntimeReady(requireProjectWorkspace: true);
+  }
+
+  Future<void> _ensureMirroredWorkspaceIfAvailable() async {
+    if (!Platform.isAndroid || !_localRuntimeStatus.supported) {
+      return;
+    }
+    if (_projectRootPath == null || _projectRootPath!.trim().isEmpty) {
+      return;
+    }
+    await _ensureLocalRuntimeWorkspaceReadyForTools();
+  }
+
+  Future<Map<String, dynamic>> _executeLocalRuntimeCommand({
+    required String command,
+    int timeoutMs = 20000,
+    int maxOutputBytes = 131072,
+    bool requireProjectWorkspace = true,
+  }) async {
+    await _ensureLocalRuntimeReady(
+      requireProjectWorkspace: requireProjectWorkspace,
+    );
+    final raw = await _localRuntimeChannel.invokeMethod<dynamic>(
+      'executeCommand',
+      <String, dynamic>{
+        'command': command,
+        'timeoutMs': timeoutMs,
+        'maxOutputBytes': maxOutputBytes,
+      },
+    );
+    if (raw is Map) {
+      return raw.map((key, value) => MapEntry(key.toString(), value));
+    }
+    throw Exception('Local runtime returned an invalid executeCommand result');
+  }
+
+  String _renderTermuxCommandTemplate(String command) {
+    final template = _termuxCommandTemplateController.text.trim();
+    final quotedCommand = _quoteShellArg(command);
+    if (template.isEmpty) {
+      return command;
+    }
+    if (template.contains('{{command}}')) {
+      return template.replaceAll('{{command}}', quotedCommand);
+    }
+    return '$template $quotedCommand';
+  }
+
+  String _termuxWorkingDirectory() {
+    final configured = _termuxWorkdirController.text.trim();
+    if (configured.isNotEmpty) {
+      return configured;
+    }
+    final projectRoot = _projectRootPath?.trim() ?? '';
+    if (projectRoot.isNotEmpty) {
+      return projectRoot;
+    }
+    return '/data/data/com.termux/files/home';
+  }
+
+  Future<Map<String, dynamic>> _executeTermuxBackendCommand({
+    required String command,
+    int timeoutMs = 20000,
+    int maxOutputBytes = 131072,
+  }) async {
+    await _refreshRuntimeBackendStatus();
+    if (!_runtimeBackendStatus.termuxReady) {
+      throw Exception('Termux backend is not ready');
+    }
+    final raw = await _runtimeBackendsChannel
+        .invokeMethod<dynamic>('executeTermuxCommand', <String, dynamic>{
+          'command': command,
+          'workingDirectory': _termuxWorkingDirectory(),
+          'commandTemplate': _renderTermuxCommandTemplate(command),
+          'timeoutMs': timeoutMs,
+          'maxOutputBytes': maxOutputBytes,
+        });
+    if (raw is Map) {
+      return raw.map((key, value) => MapEntry(key.toString(), value));
+    }
+    throw Exception('Termux backend returned an invalid result');
+  }
+
+  Future<Map<String, dynamic>> _executePrimaryBackendCommand({
+    required String command,
+    int timeoutMs = 20000,
+    int maxOutputBytes = 131072,
+    bool requireProjectWorkspace = true,
+  }) async {
+    switch (_primaryExecutionBackend) {
+      case 'termux':
+        return _executeTermuxBackendCommand(
+          command: command,
+          timeoutMs: timeoutMs,
+          maxOutputBytes: maxOutputBytes,
+        );
+      case 'native':
+      default:
+        return _executeLocalRuntimeCommand(
+          command: command,
+          timeoutMs: timeoutMs,
+          maxOutputBytes: maxOutputBytes,
+          requireProjectWorkspace: requireProjectWorkspace,
+        );
+    }
+  }
+
+  String _localRuntimeExecutionRoot() {
+    final activeWorkspace = _localRuntimeStatus.activeWorkspacePath.trim();
+    if (activeWorkspace.isNotEmpty) {
+      return activeWorkspace;
+    }
+    final shellDirectory = _localShellSnapshot.workingDirectory.trim();
+    if (shellDirectory.isNotEmpty) {
+      return shellDirectory;
+    }
+    final runtimeRoot = _localRuntimeStatus.runtimeRoot.trim();
+    if (runtimeRoot.isEmpty) {
+      return '';
+    }
+    return '$runtimeRoot${Platform.pathSeparator}workspace_boot';
+  }
+
+  String _controllerValue(
+    TextEditingController controller, {
+    String fallback = '',
+  }) {
+    final text = controller.text.trim();
+    return text.isEmpty ? fallback : text;
+  }
+
+  String _toolCommandValue(
+    TextEditingController controller, {
+    required String fallback,
+  }) {
+    return _controllerValue(controller, fallback: fallback);
+  }
+
+  String _shellWordArgs(String raw) {
+    final parts = raw
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((item) => item.trim().isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return '';
+    return parts.map(_quoteShellArg).join(' ');
+  }
+
+  String _sanitizeWorkspaceSegment(String raw, {String fallback = 'android'}) {
+    final cleaned = raw
+        .trim()
+        .replaceAll('\\', '/')
+        .split('/')
+        .last
+        .replaceAll(RegExp(r'\.[^.]+$'), '')
+        .replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^[_\.]+|[_\.]+$'), '');
+    return cleaned.isEmpty ? fallback : cleaned;
+  }
+
+  String _androidToolkitReverseLabel({String fallback = 'sample_apk'}) {
+    final manual = _androidToolkitReverseLabelController.text.trim();
+    if (manual.isNotEmpty) {
+      return _sanitizeWorkspaceSegment(manual, fallback: fallback);
+    }
+    final apkPath = _androidToolkitApkPathController.text.trim();
+    if (apkPath.isNotEmpty) {
+      return _sanitizeWorkspaceSegment(apkPath, fallback: fallback);
+    }
+    return fallback;
+  }
+
+  String _androidToolkitReverseRoot([String? label]) {
+    final effectiveLabel = _sanitizeWorkspaceSegment(
+      label ?? _androidToolkitReverseLabel(),
+      fallback: 'sample_apk',
+    );
+    return 'reverse/$effectiveLabel';
+  }
+
+  bool _looksLikeAbsolutePath(String path) {
+    final trimmed = path.trim();
+    return trimmed.startsWith('/') ||
+        RegExp(r'^[A-Za-z]:[\\/]').hasMatch(trimmed);
+  }
+
+  String _resolveAndroidToolkitPath(String path) {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty || _looksLikeAbsolutePath(trimmed)) {
+      return trimmed;
+    }
+    final projectRoot = _projectRootPath?.trim() ?? '';
+    if (projectRoot.isEmpty) {
+      return trimmed;
+    }
+    return '$projectRoot${Platform.pathSeparator}$trimmed';
+  }
+
+  String _formatLocalCommandResult(
+    String title,
+    Map<String, dynamic> result, {
+    Map<String, String> extra = const <String, String>{},
+  }) {
+    final buffer = StringBuffer()
+      ..writeln(title)
+      ..writeln('ok: ${result['ok'] == true}')
+      ..writeln('command: ${result['command'] ?? ''}');
+    final workingDirectory = '${result['workingDirectory'] ?? ''}'.trim();
+    if (workingDirectory.isNotEmpty) {
+      buffer.writeln('cwd: $workingDirectory');
+    }
+    const extraKeys = <String>[
+      'backend',
+      'task',
+      'apk_path',
+      'filter_spec',
+      'output_dir',
+      'reverse_root',
+      'project_dir',
+      'input_apk',
+      'output_apk',
+      'search_dir',
+    ];
+    for (final key in extraKeys) {
+      final value = '${result[key] ?? ''}'.trim();
+      if (value.isEmpty) continue;
+      buffer.writeln('$key: $value');
+    }
+    for (final entry in extra.entries) {
+      if (entry.value.trim().isEmpty) continue;
+      buffer.writeln('${entry.key}: ${entry.value}');
+    }
+    if (result.containsKey('exitCode')) {
+      buffer.writeln('exit_code: ${result['exitCode']}');
+    }
+    if (result['timedOut'] == true) {
+      buffer.writeln('timed_out: true');
+    }
+    final stdout = '${result['stdout'] ?? ''}'.trimRight();
+    final stderr = '${result['stderr'] ?? ''}'.trimRight();
+    if (stdout.isNotEmpty) {
+      buffer
+        ..writeln('')
+        ..writeln('stdout:')
+        ..writeln(stdout);
+    }
+    if (stderr.isNotEmpty) {
+      buffer
+        ..writeln('')
+        ..writeln('stderr:')
+        ..writeln(stderr);
+    }
+    return buffer.toString().trimRight();
+  }
+
+  Future<void> _pickAndroidToolkitFile(
+    TextEditingController controller, {
+    List<String>? allowedExtensions,
+    bool updateReverseLabelFromApk = false,
+  }) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: false,
+        type: allowedExtensions == null ? FileType.any : FileType.custom,
+        allowedExtensions: allowedExtensions,
+        withData: false,
+      );
+      final path = result == null || result.files.isEmpty
+          ? ''
+          : (result.files.first.path?.trim() ?? '');
+      if (path.isEmpty) return;
+      controller.text = path;
+      if (updateReverseLabelFromApk &&
+          _androidToolkitReverseLabelController.text.trim().isEmpty) {
+        _androidToolkitReverseLabelController.text = _sanitizeWorkspaceSegment(
+          path,
+          fallback: 'sample_apk',
+        );
+      }
+      setState(() {});
+      _persistState();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Selected: $path')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('File selection failed: $error')));
+    }
+  }
+
+  Future<void> _runAndroidToolkitAction({
+    required String title,
+    required Future<Map<String, dynamic>> Function() action,
+  }) async {
+    if (_runningAndroidToolkitAction) return;
+    setState(() {
+      _runningAndroidToolkitAction = true;
+      _androidToolkitStatus = 'Running $title...';
+    });
+    try {
+      final result = await action();
+      final ok = result['ok'] == true;
+      final output = _formatLocalCommandResult(title, result);
+      setState(() {
+        _runningAndroidToolkitAction = false;
+        _androidToolkitStatus = ok ? '$title completed.' : '$title failed.';
+        _androidToolkitOutput = output;
+        _runtimeWorkbenchOutput = output;
+      });
+    } catch (error) {
+      final message = '$title failed: $error';
+      setState(() {
+        _runningAndroidToolkitAction = false;
+        _androidToolkitStatus = message;
+        _androidToolkitOutput = message;
+        _runtimeWorkbenchOutput = message;
+      });
+    }
+  }
+
+  Future<Map<String, dynamic>> _runAndroidGradleBuildTool({
+    String? task,
+    int timeoutMs = 120000,
+    int maxOutputBytes = 262144,
+  }) async {
+    final effectiveTask = (task ?? _androidToolkitGradleTaskController.text)
+        .trim();
+    if (effectiveTask.isEmpty) {
+      throw Exception('Gradle task is required');
+    }
+    final gradleCommand = _toolCommandValue(
+      _androidToolkitGradleCommandController,
+      fallback: 'gradle',
+    );
+    final args = _shellWordArgs(effectiveTask);
+    final command =
+        "if [ -x ./gradlew ]; then ./gradlew $args; "
+        "elif [ -f ./gradlew ]; then sh ./gradlew $args; "
+        "else $gradleCommand $args; fi";
+    final result = await _executePrimaryBackendCommand(
+      command: command,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+      requireProjectWorkspace: true,
+    );
+    return <String, dynamic>{
+      'ok': result['ok'] == true,
+      'action': 'android_gradle_build',
+      'backend': _primaryExecutionBackend,
+      'task': effectiveTask,
+      ...result,
+    };
+  }
+
+  Future<Map<String, dynamic>> _runAndroidInstallApkTool({
+    String? apkPath,
+    bool replace = true,
+    bool grantAll = false,
+    int timeoutMs = 60000,
+    int maxOutputBytes = 196608,
+  }) async {
+    final effectiveApkPath =
+        (apkPath ?? _androidToolkitInstallApkPathController.text).trim();
+    if (effectiveApkPath.isEmpty) {
+      throw Exception('APK path is required');
+    }
+    final adbCommand = _toolCommandValue(
+      _androidToolkitAdbCommandController,
+      fallback: 'adb',
+    );
+    final args = <String>[
+      'install',
+      if (replace) '-r',
+      if (grantAll) '-g',
+      effectiveApkPath,
+    ].map(_quoteShellArg).join(' ');
+    final needsProjectWorkspace =
+        !_looksLikeAbsolutePath(effectiveApkPath) &&
+        (_projectRootPath?.trim().isNotEmpty ?? false);
+    if (_deviceOperationsBackend == 'shizuku') {
+      final resolvedPath = _resolveAndroidToolkitPath(effectiveApkPath);
+      final result = await _runtimeBackendsChannel.invokeMethod<dynamic>(
+        'installApkWithSystem',
+        <String, dynamic>{'apkPath': resolvedPath},
+      );
+      final mapped = result is Map
+          ? result.map((key, value) => MapEntry(key.toString(), value))
+          : <String, dynamic>{'ok': false};
+      return <String, dynamic>{
+        'ok': mapped['ok'] == true,
+        'action': 'android_install_apk',
+        'apk_path': resolvedPath,
+        'backend': 'shizuku',
+        ...mapped,
+      };
+    }
+    if (_deviceOperationsBackend == 'root') {
+      final resolvedPath = _resolveAndroidToolkitPath(effectiveApkPath);
+      final result = await _runtimeBackendsChannel
+          .invokeMethod<dynamic>('installApkWithRoot', <String, dynamic>{
+            'apkPath': resolvedPath,
+            'replace': replace,
+            'grantAll': grantAll,
+            'timeoutMs': timeoutMs,
+            'maxOutputBytes': maxOutputBytes,
+          });
+      final mapped = result is Map
+          ? result.map((key, value) => MapEntry(key.toString(), value))
+          : <String, dynamic>{'ok': false};
+      return <String, dynamic>{
+        'ok': mapped['ok'] == true,
+        'action': 'android_install_apk',
+        'apk_path': resolvedPath,
+        'backend': 'root',
+        ...mapped,
+      };
+    }
+    final result = await _executePrimaryBackendCommand(
+      command: '$adbCommand $args',
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+      requireProjectWorkspace: needsProjectWorkspace,
+    );
+    return <String, dynamic>{
+      'ok': result['ok'] == true,
+      'action': 'android_install_apk',
+      'apk_path': effectiveApkPath,
+      'backend': _primaryExecutionBackend,
+      ...result,
+    };
+  }
+
+  Future<Map<String, dynamic>> _runAndroidLogcatTool({
+    String? filterSpec,
+    bool clearBefore = false,
+    int timeoutMs = 20000,
+    int maxOutputBytes = 262144,
+  }) async {
+    final adbCommand = _toolCommandValue(
+      _androidToolkitAdbCommandController,
+      fallback: 'adb',
+    );
+    final effectiveFilter =
+        (filterSpec ?? _androidToolkitLogcatFilterController.text).trim();
+    final filterArgs = _shellWordArgs(effectiveFilter);
+    final clearPrefix = clearBefore ? '$adbCommand logcat -c && ' : '';
+    final command =
+        '$clearPrefix$adbCommand logcat -d${filterArgs.isEmpty ? '' : ' $filterArgs'}';
+    if (_deviceOperationsBackend == 'shizuku') {
+      final result = await _runtimeBackendsChannel.invokeMethod<dynamic>(
+        'captureSystemLogcat',
+        <String, dynamic>{
+          'filterSpec': effectiveFilter,
+          'clearBefore': clearBefore,
+        },
+      );
+      final mapped = result is Map
+          ? result.map((key, value) => MapEntry(key.toString(), value))
+          : <String, dynamic>{'ok': false};
+      return <String, dynamic>{
+        'ok': mapped['ok'] == true,
+        'action': 'android_logcat',
+        'filter_spec': effectiveFilter,
+        'backend': 'shizuku',
+        ...mapped,
+      };
+    }
+    if (_deviceOperationsBackend == 'root') {
+      final result = await _runtimeBackendsChannel
+          .invokeMethod<dynamic>('captureRootLogcat', <String, dynamic>{
+            'filterSpec': effectiveFilter,
+            'clearBefore': clearBefore,
+            'timeoutMs': timeoutMs,
+            'maxOutputBytes': maxOutputBytes,
+          });
+      final mapped = result is Map
+          ? result.map((key, value) => MapEntry(key.toString(), value))
+          : <String, dynamic>{'ok': false};
+      return <String, dynamic>{
+        'ok': mapped['ok'] == true,
+        'action': 'android_logcat',
+        'filter_spec': effectiveFilter,
+        'backend': 'root',
+        ...mapped,
+      };
+    }
+    final result = await _executePrimaryBackendCommand(
+      command: command,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+      requireProjectWorkspace: false,
+    );
+    return <String, dynamic>{
+      'ok': result['ok'] == true,
+      'action': 'android_logcat',
+      'filter_spec': effectiveFilter,
+      'backend': _primaryExecutionBackend,
+      ...result,
+    };
+  }
+
+  Future<Map<String, dynamic>> _runAndroidApktoolDecodeTool({
+    String? apkPath,
+    String? reverseLabel,
+    int timeoutMs = 120000,
+    int maxOutputBytes = 262144,
+  }) async {
+    final effectiveApkPath = (apkPath ?? _androidToolkitApkPathController.text)
+        .trim();
+    if (effectiveApkPath.isEmpty) {
+      throw Exception('APK path is required');
+    }
+    final label = _sanitizeWorkspaceSegment(
+      reverseLabel ?? _androidToolkitReverseLabel(),
+      fallback: 'sample_apk',
+    );
+    final root = _androidToolkitReverseRoot(label);
+    final outputDir = '$root/apktool';
+    final apktoolCommand = _toolCommandValue(
+      _androidToolkitApktoolCommandController,
+      fallback: 'apktool',
+    );
+    final command =
+        'mkdir -p ${_quoteShellArg(root)} && '
+        'rm -rf ${_quoteShellArg(outputDir)} && '
+        '$apktoolCommand d -f ${_quoteShellArg(effectiveApkPath)} '
+        '-o ${_quoteShellArg(outputDir)}';
+    final result = await _executePrimaryBackendCommand(
+      command: command,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+      requireProjectWorkspace: false,
+    );
+    return <String, dynamic>{
+      'ok': result['ok'] == true,
+      'action': 'android_decompile_apk',
+      'backend': _primaryExecutionBackend,
+      'apk_path': effectiveApkPath,
+      'output_dir': outputDir,
+      'reverse_root': root,
+      ...result,
+    };
+  }
+
+  Future<Map<String, dynamic>> _runAndroidJadxTool({
+    String? apkPath,
+    String? reverseLabel,
+    int timeoutMs = 120000,
+    int maxOutputBytes = 262144,
+  }) async {
+    final effectiveApkPath = (apkPath ?? _androidToolkitApkPathController.text)
+        .trim();
+    if (effectiveApkPath.isEmpty) {
+      throw Exception('APK path is required');
+    }
+    final label = _sanitizeWorkspaceSegment(
+      reverseLabel ?? _androidToolkitReverseLabel(),
+      fallback: 'sample_apk',
+    );
+    final root = _androidToolkitReverseRoot(label);
+    final outputDir = '$root/jadx';
+    final jadxCommand = _toolCommandValue(
+      _androidToolkitJadxCommandController,
+      fallback: 'jadx',
+    );
+    final command =
+        'mkdir -p ${_quoteShellArg(root)} && '
+        'rm -rf ${_quoteShellArg(outputDir)} && '
+        '$jadxCommand -d ${_quoteShellArg(outputDir)} '
+        '${_quoteShellArg(effectiveApkPath)}';
+    final result = await _executePrimaryBackendCommand(
+      command: command,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+      requireProjectWorkspace: false,
+    );
+    return <String, dynamic>{
+      'ok': result['ok'] == true,
+      'action': 'android_run_jadx',
+      'backend': _primaryExecutionBackend,
+      'apk_path': effectiveApkPath,
+      'output_dir': outputDir,
+      'reverse_root': root,
+      ...result,
+    };
+  }
+
+  Future<Map<String, dynamic>> _runAndroidJadxSearchTool({
+    String? query,
+    String? reverseLabel,
+    int maxResults = 40,
+    bool caseSensitive = false,
+    int timeoutMs = 20000,
+    int maxOutputBytes = 196608,
+  }) async {
+    final effectiveQuery = (query ?? _androidToolkitJadxQueryController.text)
+        .trim();
+    if (effectiveQuery.isEmpty) {
+      throw Exception('Search query is required');
+    }
+    final label = _sanitizeWorkspaceSegment(
+      reverseLabel ?? _androidToolkitReverseLabel(),
+      fallback: 'sample_apk',
+    );
+    final searchDir = '${_androidToolkitReverseRoot(label)}/jadx';
+    final caseFlag = caseSensitive ? '' : '-i ';
+    final command =
+        'if command -v rg >/dev/null 2>&1; then '
+        'rg -n ${caseSensitive ? '' : '-i '}'
+        '--max-count ${maxResults.clamp(1, 200)} '
+        '${_quoteShellArg(effectiveQuery)} ${_quoteShellArg(searchDir)}; '
+        'else '
+        'grep -RIn $caseFlag${_quoteShellArg(effectiveQuery)} '
+        '${_quoteShellArg(searchDir)} | head -n ${maxResults.clamp(1, 200)}; '
+        'fi';
+    final result = await _executePrimaryBackendCommand(
+      command: command,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+      requireProjectWorkspace: false,
+    );
+    return <String, dynamic>{
+      'ok': result['ok'] == true,
+      'action': 'android_search_jadx',
+      'backend': _primaryExecutionBackend,
+      'query': effectiveQuery,
+      'search_dir': searchDir,
+      ...result,
+    };
+  }
+
+  Future<Map<String, dynamic>> _runAndroidApktoolBuildTool({
+    String? reverseLabel,
+    int timeoutMs = 120000,
+    int maxOutputBytes = 262144,
+  }) async {
+    final label = _sanitizeWorkspaceSegment(
+      reverseLabel ?? _androidToolkitReverseLabel(),
+      fallback: 'sample_apk',
+    );
+    final root = _androidToolkitReverseRoot(label);
+    final decodeDir = '$root/apktool';
+    final outputApk = '$root/dist/${label}_unsigned.apk';
+    final apktoolCommand = _toolCommandValue(
+      _androidToolkitApktoolCommandController,
+      fallback: 'apktool',
+    );
+    final command =
+        'mkdir -p ${_quoteShellArg('$root/dist')} && '
+        '$apktoolCommand b ${_quoteShellArg(decodeDir)} '
+        '-o ${_quoteShellArg(outputApk)}';
+    final result = await _executePrimaryBackendCommand(
+      command: command,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+      requireProjectWorkspace: false,
+    );
+    return <String, dynamic>{
+      'ok': result['ok'] == true,
+      'action': 'android_rebuild_apk',
+      'backend': _primaryExecutionBackend,
+      'project_dir': decodeDir,
+      'output_apk': outputApk,
+      ...result,
+    };
+  }
+
+  Future<Map<String, dynamic>> _runAndroidSignApkTool({
+    String? reverseLabel,
+    int timeoutMs = 120000,
+    int maxOutputBytes = 196608,
+  }) async {
+    final keystorePath = _androidToolkitKeystorePathController.text.trim();
+    final alias = _androidToolkitKeystoreAliasController.text.trim();
+    final storePassword = _androidToolkitStorePasswordController.text;
+    if (keystorePath.isEmpty || alias.isEmpty || storePassword.isEmpty) {
+      throw Exception('Keystore path, alias, and store password are required');
+    }
+    final label = _sanitizeWorkspaceSegment(
+      reverseLabel ?? _androidToolkitReverseLabel(),
+      fallback: 'sample_apk',
+    );
+    final root = _androidToolkitReverseRoot(label);
+    final unsignedApk = '$root/dist/${label}_unsigned.apk';
+    final alignedApk = '$root/dist/${label}_aligned.apk';
+    final signedApk = '$root/dist/${label}_signed.apk';
+    final apksignerCommand = _toolCommandValue(
+      _androidToolkitApksignerCommandController,
+      fallback: 'apksigner',
+    );
+    final zipalignCommand = _toolCommandValue(
+      _androidToolkitZipalignCommandController,
+      fallback: 'zipalign',
+    );
+    final keyPassword = _androidToolkitKeyPasswordController.text;
+    final keyPassArg = keyPassword.isEmpty
+        ? ''
+        : ' --key-pass ${_quoteShellArg('pass:$keyPassword')}';
+    final command =
+        'mkdir -p ${_quoteShellArg('$root/dist')} && '
+        '$zipalignCommand -f 4 ${_quoteShellArg(unsignedApk)} '
+        '${_quoteShellArg(alignedApk)} && '
+        '$apksignerCommand sign '
+        '--ks ${_quoteShellArg(keystorePath)} '
+        '--ks-key-alias ${_quoteShellArg(alias)} '
+        '--ks-pass ${_quoteShellArg('pass:$storePassword')}'
+        '$keyPassArg '
+        '--out ${_quoteShellArg(signedApk)} '
+        '${_quoteShellArg(alignedApk)}';
+    final result = await _executePrimaryBackendCommand(
+      command: command,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+      requireProjectWorkspace: false,
+    );
+    return <String, dynamic>{
+      'ok': result['ok'] == true,
+      'action': 'android_sign_apk',
+      'backend': _primaryExecutionBackend,
+      'input_apk': unsignedApk,
+      'output_apk': signedApk,
+      ...result,
+    };
   }
 
   String _activeReasoningEffort() {
@@ -1231,6 +2954,14 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       final terminalLogsRaw = prefs.getString(_prefsTerminalLogs);
       final apiConnectionsRaw = prefs.getString(_prefsApiConnections);
       final conversationHistoryRaw = prefs.getString(_prefsConversationHistory);
+      final savedExpandedSettingsSections =
+          prefs.getStringList(_prefsSettingsExpandedSections) ??
+          const <String>[];
+      final hasSavedReplyStructureSections = prefs.containsKey(
+        _prefsReplyStructureSections,
+      );
+      final savedReplyStructureSections =
+          prefs.getStringList(_prefsReplyStructureSections) ?? const <String>[];
 
       final restoredProviderConfigs = <String, ProviderConfig>{};
       if (providerConfigsRaw != null && providerConfigsRaw.isNotEmpty) {
@@ -1393,6 +3124,46 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       );
       final savedBackgroundGuardEnabled =
           prefs.getBool(_prefsBackgroundGuardEnabled) ?? false;
+      final savedAndroidToolkitApkPath =
+          prefs.getString(_prefsAndroidToolkitApkPath) ?? '';
+      final savedAndroidToolkitReverseLabel =
+          prefs.getString(_prefsAndroidToolkitReverseLabel) ?? '';
+      final savedAndroidToolkitJadxQuery =
+          prefs.getString(_prefsAndroidToolkitJadxQuery) ?? '';
+      final savedAndroidToolkitGradleTask =
+          prefs.getString(_prefsAndroidToolkitGradleTask) ?? 'assembleDebug';
+      final savedAndroidToolkitInstallApkPath =
+          prefs.getString(_prefsAndroidToolkitInstallApkPath) ??
+          'app/build/outputs/apk/debug/app-debug.apk';
+      final savedAndroidToolkitLogcatFilter =
+          prefs.getString(_prefsAndroidToolkitLogcatFilter) ?? '';
+      final savedAndroidToolkitKeystorePath =
+          prefs.getString(_prefsAndroidToolkitKeystorePath) ?? '';
+      final savedAndroidToolkitKeystoreAlias =
+          prefs.getString(_prefsAndroidToolkitKeystoreAlias) ?? '';
+      final savedAndroidToolkitStorePassword =
+          prefs.getString(_prefsAndroidToolkitStorePassword) ?? '';
+      final savedAndroidToolkitKeyPassword =
+          prefs.getString(_prefsAndroidToolkitKeyPassword) ?? '';
+      final savedAndroidToolkitAdbCommand =
+          prefs.getString(_prefsAndroidToolkitAdbCommand) ?? 'adb';
+      final savedAndroidToolkitApktoolCommand =
+          prefs.getString(_prefsAndroidToolkitApktoolCommand) ?? 'apktool';
+      final savedAndroidToolkitJadxCommand =
+          prefs.getString(_prefsAndroidToolkitJadxCommand) ?? 'jadx';
+      final savedAndroidToolkitApksignerCommand =
+          prefs.getString(_prefsAndroidToolkitApksignerCommand) ?? 'apksigner';
+      final savedAndroidToolkitZipalignCommand =
+          prefs.getString(_prefsAndroidToolkitZipalignCommand) ?? 'zipalign';
+      final savedAndroidToolkitGradleCommand =
+          prefs.getString(_prefsAndroidToolkitGradleCommand) ?? 'gradle';
+      final savedPrimaryExecutionBackend =
+          prefs.getString(_prefsPrimaryExecutionBackend) ?? 'native';
+      final savedDeviceOperationsBackend =
+          prefs.getString(_prefsDeviceOperationsBackend) ?? 'native';
+      final savedTermuxWorkdir = prefs.getString(_prefsTermuxWorkdir) ?? '';
+      final savedTermuxCommandTemplate =
+          prefs.getString(_prefsTermuxCommandTemplate) ?? '';
 
       if (!mounted) return;
       setState(() {
@@ -1419,6 +3190,14 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         _godotMcpBridgeToken = savedGodotMcpBridgeToken.trim();
         _downloadAssetMaxBytes = savedDownloadAssetMaxBytes;
         _backgroundGuardEnabled = savedBackgroundGuardEnabled;
+        _primaryExecutionBackend = savedPrimaryExecutionBackend == 'termux'
+            ? 'termux'
+            : 'native';
+        _deviceOperationsBackend =
+            savedDeviceOperationsBackend == 'shizuku' ||
+                savedDeviceOperationsBackend == 'root'
+            ? savedDeviceOperationsBackend
+            : 'native';
 
         _messages
           ..clear()
@@ -1442,6 +3221,24 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         _conversationHistory.removeWhere(
           (item) => item.id == _activeConversationId,
         );
+        if (savedExpandedSettingsSections.isNotEmpty) {
+          _expandedSettingsSections
+            ..clear()
+            ..addAll(
+              savedExpandedSettingsSections.where(
+                (item) => item.trim().isNotEmpty,
+              ),
+            );
+        }
+        if (hasSavedReplyStructureSections) {
+          _enabledReplyStructureSections
+            ..clear()
+            ..addAll(
+              savedReplyStructureSections.where(
+                (item) => item.trim().isNotEmpty,
+              ),
+            );
+        }
       });
 
       final activeConnection = _activeConnection;
@@ -1458,6 +3255,40 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       }
       _godotBridgeUrlController.text = _godotMcpBridgeUrl;
       _godotBridgeTokenController.text = _godotMcpBridgeToken;
+      _androidToolkitApkPathController.text = savedAndroidToolkitApkPath.trim();
+      _androidToolkitReverseLabelController.text =
+          savedAndroidToolkitReverseLabel.trim();
+      _androidToolkitJadxQueryController.text = savedAndroidToolkitJadxQuery
+          .trim();
+      _androidToolkitGradleTaskController.text = savedAndroidToolkitGradleTask
+          .trim();
+      _androidToolkitInstallApkPathController.text =
+          savedAndroidToolkitInstallApkPath.trim();
+      _androidToolkitLogcatFilterController.text =
+          savedAndroidToolkitLogcatFilter.trim();
+      _androidToolkitKeystorePathController.text =
+          savedAndroidToolkitKeystorePath.trim();
+      _androidToolkitKeystoreAliasController.text =
+          savedAndroidToolkitKeystoreAlias.trim();
+      _androidToolkitStorePasswordController.text =
+          savedAndroidToolkitStorePassword;
+      _androidToolkitKeyPasswordController.text =
+          savedAndroidToolkitKeyPassword;
+      _androidToolkitAdbCommandController.text = savedAndroidToolkitAdbCommand
+          .trim();
+      _androidToolkitApktoolCommandController.text =
+          savedAndroidToolkitApktoolCommand.trim();
+      _androidToolkitJadxCommandController.text = savedAndroidToolkitJadxCommand
+          .trim();
+      _androidToolkitApksignerCommandController.text =
+          savedAndroidToolkitApksignerCommand.trim();
+      _androidToolkitZipalignCommandController.text =
+          savedAndroidToolkitZipalignCommand.trim();
+      _androidToolkitGradleCommandController.text =
+          savedAndroidToolkitGradleCommand.trim();
+      _termuxWorkdirController.text = savedTermuxWorkdir.trim();
+      _termuxCommandTemplateController.text = savedTermuxCommandTemplate.trim();
+      _applyRecommendedMobileDevPreset(force: false, persist: false);
     } catch (_) {
       // Ignore restore failures and continue with in-memory defaults.
     } finally {
@@ -1513,11 +3344,743 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     );
     await prefs.setInt(_prefsDownloadAssetMaxBytes, _downloadAssetMaxBytes);
     await prefs.setBool(_prefsBackgroundGuardEnabled, _backgroundGuardEnabled);
+    await prefs.setString(
+      _prefsAndroidToolkitApkPath,
+      _androidToolkitApkPathController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitReverseLabel,
+      _androidToolkitReverseLabelController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitJadxQuery,
+      _androidToolkitJadxQueryController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitGradleTask,
+      _androidToolkitGradleTaskController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitInstallApkPath,
+      _androidToolkitInstallApkPathController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitLogcatFilter,
+      _androidToolkitLogcatFilterController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitKeystorePath,
+      _androidToolkitKeystorePathController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitKeystoreAlias,
+      _androidToolkitKeystoreAliasController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitStorePassword,
+      _androidToolkitStorePasswordController.text,
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitKeyPassword,
+      _androidToolkitKeyPasswordController.text,
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitAdbCommand,
+      _androidToolkitAdbCommandController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitApktoolCommand,
+      _androidToolkitApktoolCommandController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitJadxCommand,
+      _androidToolkitJadxCommandController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitApksignerCommand,
+      _androidToolkitApksignerCommandController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitZipalignCommand,
+      _androidToolkitZipalignCommandController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsAndroidToolkitGradleCommand,
+      _androidToolkitGradleCommandController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsPrimaryExecutionBackend,
+      _primaryExecutionBackend,
+    );
+    await prefs.setString(
+      _prefsDeviceOperationsBackend,
+      _deviceOperationsBackend,
+    );
+    await prefs.setString(
+      _prefsTermuxWorkdir,
+      _termuxWorkdirController.text.trim(),
+    );
+    await prefs.setString(
+      _prefsTermuxCommandTemplate,
+      _termuxCommandTemplateController.text.trim(),
+    );
+    await prefs.setStringList(
+      _prefsSettingsExpandedSections,
+      _expandedSettingsSections.toList(),
+    );
+    await prefs.setStringList(
+      _prefsReplyStructureSections,
+      _enabledReplyStructureSections.toList(),
+    );
   }
 
   void _persistState() {
     if (_restoringState) return;
-    unawaited(_saveState());
+    _persistStateDebounce?.cancel();
+    _persistStateDebounce = Timer(const Duration(milliseconds: 220), () {
+      unawaited(_saveState());
+    });
+  }
+
+  void _toggleSettingsSection(String id) {
+    setState(() {
+      if (_expandedSettingsSections.contains(id)) {
+        _expandedSettingsSections.remove(id);
+      } else {
+        _expandedSettingsSections.add(id);
+      }
+    });
+    _persistState();
+  }
+
+  Future<void> _refreshWorkbenchOverview({bool showFeedback = false}) async {
+    await _refreshLocalRuntimeStatus(showFailureSnackBar: showFeedback);
+    await _refreshRuntimeBackendStatus(showFailureSnackBar: showFeedback);
+    await _refreshEmbeddedDevToolkitStatus(showFailureSnackBar: showFeedback);
+    await _refreshShellSnapshot();
+    if (showFeedback && mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('方案状态已刷新')));
+    }
+  }
+
+  Future<Map<String, dynamic>> _inspectEmbeddedGitRepository() async {
+    final repoPath = (_projectRootPath ?? '').trim();
+    if (repoPath.isEmpty) {
+      throw Exception('请先选择项目目录');
+    }
+    final raw = await _embeddedDevToolkitChannel.invokeMethod<dynamic>(
+      'inspectGitRepository',
+      <String, dynamic>{'repoPath': repoPath},
+    );
+    final mapped = raw is Map
+        ? raw.map((key, value) => MapEntry(key.toString(), value))
+        : <String, dynamic>{'ok': false};
+    return mapped;
+  }
+
+  Future<Map<String, dynamic>> _runEmbeddedJadxTool() async {
+    final apkPath = _androidToolkitApkPathController.text.trim();
+    if (apkPath.isEmpty) {
+      throw Exception('请先填写 APK 路径');
+    }
+    final raw = await _embeddedDevToolkitChannel.invokeMethod<dynamic>(
+      'decompileApkWithEmbeddedJadx',
+      <String, dynamic>{
+        'apkPath': apkPath,
+        'outputLabel': _androidToolkitReverseLabel(),
+      },
+    );
+    final mapped = raw is Map
+        ? raw.map((key, value) => MapEntry(key.toString(), value))
+        : <String, dynamic>{'ok': false};
+    return mapped;
+  }
+
+  Future<Map<String, dynamic>> _verifyEmbeddedApkSignature() async {
+    final apkPath = _androidToolkitApkPathController.text.trim();
+    if (apkPath.isEmpty) {
+      throw Exception('请先填写 APK 路径');
+    }
+    final raw = await _embeddedDevToolkitChannel.invokeMethod<dynamic>(
+      'verifyApkSignature',
+      <String, dynamic>{'apkPath': apkPath},
+    );
+    final mapped = raw is Map
+        ? raw.map((key, value) => MapEntry(key.toString(), value))
+        : <String, dynamic>{'ok': false};
+    return mapped;
+  }
+
+  void _applyRecommendedMobileDevPreset({
+    bool force = true,
+    bool persist = true,
+  }) {
+    final projectRoot = _projectRootPath?.trim() ?? '';
+    final recommendedWorkdir = projectRoot.isNotEmpty
+        ? projectRoot
+        : '/data/data/com.termux/files/home';
+    const recommendedTemplate =
+        'proot-distro login ubuntu --shared-tmp -- /bin/bash -lc {{command}}';
+
+    if (force || _termuxWorkdirController.text.trim().isEmpty) {
+      _termuxWorkdirController.text = recommendedWorkdir;
+    }
+    if (force || _termuxCommandTemplateController.text.trim().isEmpty) {
+      _termuxCommandTemplateController.text = recommendedTemplate;
+    }
+    if (force || _androidToolkitGradleTaskController.text.trim().isEmpty) {
+      _androidToolkitGradleTaskController.text = 'assembleDebug';
+    }
+    if (force || _androidToolkitInstallApkPathController.text.trim().isEmpty) {
+      _androidToolkitInstallApkPathController.text =
+          'build/app/outputs/flutter-apk/app-debug.apk';
+    }
+    if (force || _androidToolkitGradleCommandController.text.trim().isEmpty) {
+      _androidToolkitGradleCommandController.text = 'gradle';
+    }
+    if (force || _androidToolkitAdbCommandController.text.trim().isEmpty) {
+      _androidToolkitAdbCommandController.text = 'adb';
+    }
+    if (force || _androidToolkitApktoolCommandController.text.trim().isEmpty) {
+      _androidToolkitApktoolCommandController.text = 'apktool';
+    }
+    if (force || _androidToolkitJadxCommandController.text.trim().isEmpty) {
+      _androidToolkitJadxCommandController.text = 'jadx';
+    }
+    if (force ||
+        _androidToolkitApksignerCommandController.text.trim().isEmpty) {
+      _androidToolkitApksignerCommandController.text = 'apksigner';
+    }
+    if (force || _androidToolkitZipalignCommandController.text.trim().isEmpty) {
+      _androidToolkitZipalignCommandController.text = 'zipalign';
+    }
+    if (force || _androidToolkitLogcatFilterController.text.trim().isEmpty) {
+      _androidToolkitLogcatFilterController.text = '*:I';
+    }
+
+    setState(() {
+      if (force) {
+        if (_runtimeBackendStatus.termuxInstalled) {
+          _primaryExecutionBackend = 'termux';
+        } else {
+          _primaryExecutionBackend = 'native';
+        }
+        if (_runtimeBackendStatus.shizukuInstalled) {
+          _deviceOperationsBackend = 'shizuku';
+        } else if (_runtimeBackendStatus.rootAvailable) {
+          _deviceOperationsBackend = 'root';
+        } else {
+          _deviceOperationsBackend = 'native';
+        }
+      }
+      _expandedSettingsSections
+        ..add('solution_overview')
+        ..add('components')
+        ..add('project')
+        ..add('local_runtime')
+        ..add('execution_backends');
+      _androidToolkitStatus = '已写入推荐配置，可直接开始联调 Android/Flutter 项目。';
+      _runtimeWorkbenchOutput = [
+        '移动端方案推荐配置已写入：',
+        '- Termux 工作目录：${_termuxWorkdirController.text.trim()}',
+        '- Termux 命令模板：${_termuxCommandTemplateController.text.trim()}',
+        '- Gradle 默认任务：${_androidToolkitGradleTaskController.text.trim()}',
+        '- APK 安装路径：${_androidToolkitInstallApkPathController.text.trim()}',
+      ].join('\n');
+    });
+
+    if (persist) {
+      _persistState();
+    }
+    if (force && mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已写入移动端开发推荐配置')));
+    }
+  }
+
+  Widget _buildSolutionOverviewSection() {
+    final hasProject = _projectRootPath?.trim().isNotEmpty == true;
+    final runtimeReady = Platform.isAndroid && _localRuntimeStatus.supported;
+    final runtimeRunning = runtimeReady && _localRuntimeStatus.isRunning;
+    final embeddedReady = Platform.isAndroid && _embeddedDevToolkitStatus.ready;
+    final termuxReady = _runtimeBackendStatus.termuxReady;
+    final termuxInstalled = _runtimeBackendStatus.termuxInstalled;
+    final agentReady = _activeConnection != null;
+    final shellReady = _localShellSnapshot.isRunning;
+    final perfMode = _expandedSettingsSections.length <= 4;
+
+    return _PanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '已按“Flutter 手机端 AI 编程工作台 + Android 本地运行时 + Termux 工具链 + 可扩展 Agent 内核”方案补齐，并将重点能力集中到右侧抽屉中。',
+            style: TextStyle(
+              fontSize: 12,
+              color: AppPalette.muted,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _SolutionStatusCard(
+                icon: Icons.phone_android_rounded,
+                title: 'Flutter 工作台',
+                subtitle: hasProject ? '项目已绑定，可直接浏览与编辑' : '待绑定项目目录',
+                statusLabel: hasProject ? '就绪' : '待配置',
+                active: hasProject,
+              ),
+              _SolutionStatusCard(
+                icon: Icons.memory_rounded,
+                title: 'Android 本地运行时',
+                subtitle: runtimeRunning ? '前台服务与镜像工作区已启用' : '可一键启动本地运行时',
+                statusLabel: runtimeRunning
+                    ? '运行中'
+                    : (runtimeReady ? '可用' : '不可用'),
+                active: runtimeReady,
+              ),
+              _SolutionStatusCard(
+                icon: Icons.inventory_2_rounded,
+                title: '内置开发栈',
+                subtitle: embeddedReady
+                    ? 'Git、JADX 与签名校验已可直接使用'
+                    : '正在准备 APK 内置开发能力',
+                statusLabel: embeddedReady ? '已启用' : '准备中',
+                active: embeddedReady,
+              ),
+              _SolutionStatusCard(
+                icon: Icons.terminal_rounded,
+                title: '外部增强后端',
+                subtitle: termuxReady
+                    ? 'Termux 已接入，可承接更重的 CLI 工作流'
+                    : (termuxInstalled
+                          ? 'Termux 已安装，等待授权后可启用增强能力'
+                          : '可选安装 Termux 作为增强后端'),
+                statusLabel: termuxReady ? '增强就绪' : '可选增强',
+                active: termuxReady,
+              ),
+              _SolutionStatusCard(
+                icon: Icons.auto_awesome_rounded,
+                title: 'Agent 内核',
+                subtitle: agentReady ? '模型连接已可用，可执行规划与工具调用' : '请先配置模型连接',
+                statusLabel: agentReady ? '可用' : '待配置',
+                active: agentReady,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFD),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _AgentMetricChip(
+                  label:
+                      '主后端 ${_primaryBackendLabel(_primaryExecutionBackend)}',
+                ),
+                _AgentMetricChip(
+                  label:
+                      '设备后端 ${_deviceBackendLabel(_deviceOperationsBackend)}',
+                ),
+                _AgentMetricChip(label: shellReady ? 'Shell 已启动' : 'Shell 未启动'),
+                _AgentMetricChip(label: perfMode ? '抽屉性能模式' : '可继续折叠板块'),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.icon(
+                onPressed: () => _applyRecommendedMobileDevPreset(),
+                icon: const Icon(Icons.auto_fix_high_rounded),
+                label: const Text('写入推荐配置'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => _refreshWorkbenchOverview(showFeedback: true),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('刷新方案状态'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _testCurrentExecutionBackend,
+                icon: const Icon(Icons.play_circle_outline_rounded),
+                label: const Text('测试当前后端'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            '性能优化说明：右侧抽屉已改为手风琴式按需展开，只在展开时构建对应板块内容，避免所有重型面板同时渲染。',
+            style: TextStyle(
+              fontSize: 11,
+              color: AppPalette.muted,
+              height: 1.45,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBuiltInComponentsSection() {
+    final componentRows = <Widget>[
+      _SolutionComponentRow(
+        icon: Icons.design_services_rounded,
+        title: 'Flutter 手机工作台',
+        subtitle: '聊天、项目文件、补丁审批、终端面板与工作区状态面板。',
+        badge: '已内置',
+        tone: const Color(0xFF0B6E4F),
+      ),
+      _SolutionComponentRow(
+        icon: Icons.storage_rounded,
+        title: 'Android 本地运行时',
+        subtitle: '前台服务、本地镜像工作区、本地 Shell、命令执行与状态回传。',
+        badge: '已内置',
+        tone: const Color(0xFF2563EB),
+      ),
+      _SolutionComponentRow(
+        icon: Icons.developer_mode_rounded,
+        title: 'Android 开发工具箱',
+        subtitle: 'Gradle、APK 安装、Logcat 以及内置/外接反编译与签名能力统一放在这里。',
+        badge: '已内置',
+        tone: const Color(0xFF7C3AED),
+      ),
+      _SolutionComponentRow(
+        icon: Icons.inventory_2_rounded,
+        title: '内置开发栈',
+        subtitle: 'JGit、jadx-core、apksig 已打进 APK，可直接完成仓库检测、反编译与签名校验。',
+        badge: _embeddedDevToolkitStatus.ready ? '已启用' : '加载中',
+        tone: _embeddedDevToolkitStatus.ready
+            ? const Color(0xFF0B6E4F)
+            : const Color(0xFFB45309),
+      ),
+      _SolutionComponentRow(
+        icon: Icons.terminal_rounded,
+        title: 'Termux 桥接层',
+        subtitle: '命令模板、工作目录与权限桥接已内置；Termux 现作为增强后端，不再是硬依赖。',
+        badge: _runtimeBackendStatus.termuxInstalled ? '增强已就绪' : '可选增强',
+        tone: _runtimeBackendStatus.termuxInstalled
+            ? const Color(0xFF0B6E4F)
+            : const Color(0xFFB45309),
+      ),
+      _SolutionComponentRow(
+        icon: Icons.account_tree_rounded,
+        title: '可扩展 Agent 内核',
+        subtitle: '规划、工具调用、进度追踪、回滚与补丁执行面板已接入。',
+        badge: _activeConnection == null ? '待接模型' : '可用',
+        tone: _activeConnection == null
+            ? const Color(0xFFB45309)
+            : const Color(0xFF0B6E4F),
+      ),
+    ];
+
+    return _PanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '为了减少切换成本，新能力已统一收拢到右侧抽屉。重型板块默认折叠，点击后再加载内容。',
+            style: TextStyle(
+              fontSize: 12,
+              color: AppPalette.muted,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 12),
+          ...componentRows,
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _runtimeBackendStatus.termuxLaunchable
+                    ? () => _openRuntimeBackendApp('termux')
+                    : null,
+                icon: const Icon(Icons.open_in_new_rounded),
+                label: const Text('打开 Termux'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _runtimeBackendStatus.shizukuLaunchable
+                    ? () => _openRuntimeBackendApp('shizuku')
+                    : null,
+                icon: const Icon(Icons.open_in_new_rounded),
+                label: const Text('打开 Shizuku'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmbeddedDevStackSection() {
+    final supported = Platform.isAndroid && _embeddedDevToolkitStatus.supported;
+    final busy =
+        _runningAndroidToolkitAction || _loadingEmbeddedDevToolkitStatus;
+    final lastError = _embeddedDevToolkitStatus.lastError.trim();
+
+    Future<void> runAction(
+      String title,
+      Future<Map<String, dynamic>> Function() action,
+    ) {
+      return _runAndroidToolkitAction(title: title, action: action);
+    }
+
+    return _PanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '这部分能力直接内置在 APK 中，适合作为手机端开发与逆向分析的基础栈。外部工具链现在属于增强项，不再是必需项。',
+            style: TextStyle(
+              fontSize: 12,
+              color: AppPalette.muted,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFD),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '内置开发栈状态',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppPalette.ink,
+                        ),
+                      ),
+                    ),
+                    if (_loadingEmbeddedDevToolkitStatus)
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  supported ? '状态：可用' : '状态：当前不可用',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '工作目录：${_embeddedDevToolkitStatus.workspaceRoot.isEmpty ? '未就绪' : _embeddedDevToolkitStatus.workspaceRoot}',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _AgentMetricChip(
+                      label: _embeddedDevToolkitStatus.gitAvailable
+                          ? 'JGit 已内置'
+                          : 'JGit 未就绪',
+                    ),
+                    _AgentMetricChip(
+                      label: _embeddedDevToolkitStatus.jadxAvailable
+                          ? 'JADX 已内置'
+                          : 'JADX 未就绪',
+                    ),
+                    _AgentMetricChip(
+                      label: _embeddedDevToolkitStatus.apkSigAvailable
+                          ? 'APK 签名校验已内置'
+                          : 'APK 签名校验未就绪',
+                    ),
+                  ],
+                ),
+                if (lastError.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    '最近错误：$lastError',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Colors.redAccent,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction('检查 Git 仓库', _inspectEmbeddedGitRepository),
+                        );
+                      },
+                icon: const Icon(Icons.account_tree_rounded),
+                label: const Text('检查 Git 仓库'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction('内置 JADX 反编译', _runEmbeddedJadxTool),
+                        );
+                      },
+                icon: const Icon(Icons.code_rounded),
+                label: const Text('内置 JADX'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction('校验 APK 签名', _verifyEmbeddedApkSignature),
+                        );
+                      },
+                icon: const Icon(Icons.verified_rounded),
+                label: const Text('校验签名'),
+              ),
+              OutlinedButton.icon(
+                onPressed: busy
+                    ? null
+                    : () => _refreshEmbeddedDevToolkitStatus(
+                        showFailureSnackBar: true,
+                      ),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('刷新状态'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            '当前策略：内置开发栈负责基础开发与分析，Termux/PRoot、Root、Shizuku 负责更重或更开放的外部能力。',
+            style: TextStyle(
+              fontSize: 11,
+              color: AppPalette.muted,
+              height: 1.45,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingsSectionCard(_SettingsSectionEntry section) {
+    final expanded = _expandedSettingsSections.contains(section.id);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE1E8F0)),
+          boxShadow: [
+            BoxShadow(
+              blurRadius: 14,
+              offset: const Offset(0, 6),
+              color: Colors.black.withValues(alpha: 0.04),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            InkWell(
+              onTap: () => _toggleSettingsSection(section.id),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(16),
+                bottom: Radius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF3F7FD),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(section.icon, color: AppPalette.primary),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            section.title,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: AppPalette.ink,
+                            ),
+                          ),
+                          if (section.summary.isNotEmpty) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              section.summary,
+                              maxLines: expanded ? 3 : 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppPalette.muted,
+                                height: 1.35,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    Icon(
+                      expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      color: const Color(0xFF6F8296),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (expanded) ...[
+              const Divider(height: 1, thickness: 1, color: Color(0xFFE8EEF5)),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 12, 10, 12),
+                child: section.builder(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _upsertConnection(
@@ -2875,6 +5438,18 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     return title;
   }
 
+  String? _normalizeWorkspaceBindingPath(String? raw) {
+    final normalized = raw?.trim() ?? '';
+    if (normalized.isEmpty) return null;
+    return normalized;
+  }
+
+  String? _workspaceBindingLabel(String? projectRootPath) {
+    final normalized = _normalizeWorkspaceBindingPath(projectRootPath);
+    if (normalized == null) return null;
+    return '工作区：$normalized';
+  }
+
   String _singleLinePreview(String raw, {int maxLength = 24}) {
     final normalized = raw
         .replaceAll('\r\n', '\n')
@@ -2887,6 +5462,10 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   }
 
   bool get _hasMeaningfulConversation {
+    if ((_projectRootPath?.trim().isNotEmpty ?? false) ||
+        _projectContext.trim().isNotEmpty) {
+      return true;
+    }
     if (_messages.isEmpty) {
       return _conversationTitle.trim().isNotEmpty &&
           _conversationTitle.trim() != _defaultConversationTitle;
@@ -2907,12 +5486,21 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
 
   String _buildConversationPreviewFromMessages(List<ChatMessage> messages) {
     for (final item in messages.reversed) {
-      final text = item.text.trim();
+      final text = _messageDisplayText(item).trim();
       if (text.isEmpty) continue;
       if (item.role == ChatRole.system) continue;
       return _singleLinePreview(text, maxLength: 26);
     }
     return _singleLinePreview(_defaultAssistantGreeting, maxLength: 26);
+  }
+
+  bool _isToolLogMessage(ChatMessage message) {
+    if (message.role != ChatRole.system) return false;
+    if (_isReplySectionEnabled(_replySectionToolActivity)) return false;
+    final text = message.text.trim();
+    return text.startsWith('AI ') ||
+        text.startsWith('工具结果(') ||
+        text.startsWith('AI 调用工具:');
   }
 
   String _createConversationId() {
@@ -2926,9 +5514,181 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             role: message.role,
             text: message.text,
             time: message.time,
+            parts: message.parts,
+            metadata: message.metadata,
           ),
         )
         .toList(growable: false);
+  }
+
+  String _messageDisplayText(ChatMessage message) {
+    if (message.text.trim().isNotEmpty) {
+      return message.text;
+    }
+    for (final part in message.parts) {
+      if (part is ContentPart && part.markdown.trim().isNotEmpty) {
+        return part.markdown;
+      }
+      if (part is ReasoningPart && part.summary.trim().isNotEmpty) {
+        return part.summary;
+      }
+    }
+    return '';
+  }
+
+  List<AgentProgressSnapshot> _snapshotAgentProgressEntries() {
+    return _agentProgressEntries
+        .map(
+          (entry) => AgentProgressSnapshot(
+            title: entry.title,
+            detail: entry.detail,
+            time: entry.time,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  List<ToolActivitySnapshot> _snapshotToolActivityEntries() {
+    return _agentToolEvents
+        .map(
+          (entry) => ToolActivitySnapshot(
+            toolName: entry.name,
+            status: entry.status,
+            summary: entry.summary,
+            argsPreview: entry.argsPreview,
+            time: entry.time,
+            durationMs: entry.durationMs,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  ChatMessage _buildStructuredAssistantMessage({
+    required String text,
+    required String time,
+    String reasoningSummary = '',
+    List<_ToolCall> toolCalls = const <_ToolCall>[],
+    Map<String, String> toolOutputsById = const <String, String>{},
+    List<CitationPart> citations = const <CitationPart>[],
+    ResponseMetadata? metadata,
+    List<AgentProgressSnapshot> progressEntries =
+        const <AgentProgressSnapshot>[],
+    List<ToolActivitySnapshot> toolActivityEntries =
+        const <ToolActivitySnapshot>[],
+  }) {
+    final parts = <ResponsePart>[];
+    final trimmedReasoning = reasoningSummary.trim();
+    final trimmedText = text.trim();
+
+    if (trimmedReasoning.isNotEmpty) {
+      parts.add(
+        ReasoningPart(summary: trimmedReasoning, collapsedByDefault: true),
+      );
+    }
+    if (trimmedText.isNotEmpty) {
+      parts.add(ContentPart(markdown: trimmedText));
+    }
+    for (final call in toolCalls) {
+      final preview = _summarizeForLog(toolOutputsById[call.id] ?? '');
+      parts.add(
+        ToolCallPart(
+          id: call.id,
+          toolName: call.name,
+          argumentsJson: call.argumentsJson,
+          reason: _toolPlanPhrase(call.name),
+          outputPreview: preview,
+        ),
+      );
+    }
+    if (progressEntries.isNotEmpty) {
+      parts.add(
+        AgentProgressPart(
+          summary: _agentPlanSummary.trim().isEmpty
+              ? _singleLinePreview(trimmedText, maxLength: 80)
+              : _agentPlanSummary.trim(),
+          entries: progressEntries,
+        ),
+      );
+    }
+    if (toolActivityEntries.isNotEmpty) {
+      parts.add(ToolActivityPart(entries: toolActivityEntries));
+    }
+    parts.addAll(citations);
+    if (metadata != null && metadata.hasAnyValue) {
+      parts.add(MetadataPart(metadata: metadata));
+    }
+
+    return ChatMessage(
+      role: ChatRole.assistant,
+      text: trimmedText,
+      time: time,
+      parts: parts,
+      metadata: metadata,
+    );
+  }
+
+  List<CitationPart> _collectCitationPartsFromToolResults(
+    Iterable<String> toolResults,
+  ) {
+    final citations = <CitationPart>[];
+    final dedup = <String>{};
+
+    for (final raw in toolResults) {
+      dynamic decoded;
+      try {
+        decoded = jsonDecode(raw);
+      } catch (_) {
+        decoded = null;
+      }
+      if (decoded is! Map) continue;
+
+      final action = '${decoded['action'] ?? ''}'.trim();
+      if (action == 'web_search') {
+        final results = decoded['results'];
+        if (results is List) {
+          for (final item in results) {
+            if (item is! Map) continue;
+            final uri = '${item['url'] ?? ''}'.trim();
+            if (uri.isEmpty || !dedup.add('web:$uri')) continue;
+            citations.add(
+              CitationPart(
+                title: '${item['title'] ?? uri}'.trim(),
+                uri: uri,
+                snippet: '${item['snippet'] ?? ''}'.trim(),
+                sourceType: 'web',
+              ),
+            );
+            if (citations.length >= 6) return citations;
+          }
+        }
+      } else if (action == 'fetch_webpage') {
+        final uri = '${decoded['url'] ?? ''}'.trim();
+        if (uri.isEmpty || !dedup.add('page:$uri')) continue;
+        citations.add(
+          CitationPart(
+            title: '${decoded['title'] ?? uri}'.trim(),
+            uri: uri,
+            snippet: _summarizeForLog('${decoded['content'] ?? ''}'),
+            sourceType: 'web',
+          ),
+        );
+        if (citations.length >= 6) return citations;
+      } else if (action == 'read_file' || action == 'read_file_part') {
+        final path = '${decoded['path'] ?? ''}'.trim();
+        if (path.isEmpty || !dedup.add('file:$path')) continue;
+        citations.add(
+          CitationPart(
+            title: path,
+            uri: path,
+            snippet: _summarizeForLog('${decoded['content'] ?? ''}'),
+            sourceType: 'file',
+          ),
+        );
+        if (citations.length >= 6) return citations;
+      }
+    }
+
+    return citations;
   }
 
   int _historyIndexByConversationId(String id) {
@@ -2982,6 +5742,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         timestampMs: DateTime.now().millisecondsSinceEpoch,
         messages: _cloneMessages(_messages),
         isPinned: _activeConversationPinned,
+        projectRootPath: _normalizeWorkspaceBindingPath(_projectRootPath),
+        projectContext: _projectContext,
       ),
       moveToTop: moveToTop,
     );
@@ -3002,6 +5764,12 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     if (closeDrawer) {
       Navigator.of(context).pop();
     }
+    final restoredProjectRoot = _normalizeWorkspaceBindingPath(
+      item.projectRootPath,
+    );
+    final restoredProjectContext = restoredProjectRoot == null
+        ? ''
+        : item.projectContext;
     final staleRounds = List<_AiRoundRecord>.from(_aiRoundHistory);
     setState(() {
       _archiveCurrentConversation();
@@ -3014,11 +5782,24 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       if (_messages.isEmpty) {
         _messages.add(_buildWelcomeMessage());
       }
+      _projectRootPath = restoredProjectRoot;
+      _projectContext = restoredProjectContext;
+      _projectFiles = const [];
+      _resetDrawerExplorerState();
       _aiRoundHistory.clear();
       _fileOpsStatus = '已恢复历史对话';
       _conversationHistory.removeWhere((entry) => entry.id == item.id);
     });
     _promptController.clear();
+
+    if (restoredProjectRoot != null) {
+      await _loadProjectFolder(restoredProjectRoot, silent: true);
+      if (mounted) {
+        setState(() {
+          _projectContext = restoredProjectContext;
+        });
+      }
+    }
     _persistState();
 
     for (final round in staleRounds) {
@@ -3044,6 +5825,10 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       _messages
         ..clear()
         ..add(_buildWelcomeMessage());
+      _projectRootPath = null;
+      _projectContext = '';
+      _projectFiles = const [];
+      _resetDrawerExplorerState();
       _aiRoundHistory.clear();
       _fileOpsStatus = '等待操作';
     });
@@ -3400,37 +6185,17 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   }
 
   Future<void> _showConversationTitleEditor() async {
-    final controller = TextEditingController(
-      text: _normalizedConversationTitle(),
-    );
     final nextTitle = await showDialog<String>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('自定义对话标题'),
-          content: TextField(
-            controller: controller,
-            maxLength: 24,
-            autofocus: true,
-            textInputAction: TextInputAction.done,
-            onSubmitted: (value) => Navigator.of(context).pop(value),
-            decoration: const InputDecoration(hintText: '例如：登录页按钮样式调整'),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, controller.text),
-              child: const Text('保存'),
-            ),
-          ],
-        );
-      },
+      builder: (_) => _TextEditingAlertDialog(
+        title: '自定义对话标题',
+        initialValue: _normalizedConversationTitle(),
+        hintText: '例如：登录页按钮样式调整',
+        maxLength: 24,
+        submitLabel: '保存',
+      ),
     );
-    controller.dispose();
-    if (nextTitle == null) return;
+    if (!mounted || nextTitle == null) return;
     final normalized = _singleLinePreview(
       _normalizedConversationTitle(nextTitle),
       maxLength: 24,
@@ -3874,13 +6639,14 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     _updateReplyProgress('准备请求模型');
     await _startBackgroundReplyGuard(stage: '准备请求模型');
     try {
-      await _replyWithModel(
+      await _replyWithModelOrchestrated(
         roundDraft: roundDraft,
         conversationId: conversationId,
         attachedImages: attachedImages,
       );
     } catch (error) {
       if (error is _ModelRequestCancelledException) {
+        _recordAgentProgress('已停止回复', detail: '这次回复已被手动停止。');
         _updateReplyProgress('已手动停止回复');
         _appendMessage(
           ChatMessage(
@@ -3891,6 +6657,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           conversationId: conversationId,
         );
       } else {
+        _recordAgentProgress('回复失败', detail: error.toString());
         _updateReplyProgress('回复失败');
         _appendMessage(
           ChatMessage(
@@ -4438,6 +7205,45 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     return value.trim().replaceAll('\\', '/').replaceFirst(RegExp(r'^/'), '');
   }
 
+  bool get _hasActiveMirrorWorkspace {
+    final projectRoot = _projectRootPath?.trim();
+    final preparedProject = _localRuntimeStatus.lastPreparedProjectPath.trim();
+    if (projectRoot == null || projectRoot.isEmpty) return false;
+    if (!_localRuntimeStatus.hasWorkspace) return false;
+    return preparedProject == projectRoot;
+  }
+
+  String? _effectiveProjectAccessRootPath() {
+    if (_hasActiveMirrorWorkspace) {
+      final workspacePath = _localRuntimeStatus.activeWorkspacePath.trim();
+      if (workspacePath.isNotEmpty) {
+        return workspacePath;
+      }
+    }
+    final projectRoot = _projectRootPath?.trim();
+    if (projectRoot == null || projectRoot.isEmpty) {
+      return null;
+    }
+    return projectRoot;
+  }
+
+  String _requireEffectiveProjectAccessRootPath() {
+    final root = _effectiveProjectAccessRootPath();
+    if (root == null || root.isEmpty) {
+      throw Exception('Project root is not available.');
+    }
+    return root;
+  }
+
+  String _displayProjectAccessRootPath() {
+    return _effectiveProjectAccessRootPath() ?? '';
+  }
+
+  String _relativeProjectAccessPath(String absolutePath) {
+    final root = _requireEffectiveProjectAccessRootPath();
+    return _normalizeInputPath(_relativePath(absolutePath, root));
+  }
+
   bool _isWithinRoot(String path, String rootPath) {
     var normalizedPath = path.replaceAll('\\', '/');
     var normalizedRoot = rootPath.replaceAll('\\', '/');
@@ -4459,7 +7265,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     if (normalized.isEmpty) {
       throw Exception('请输入相对路径');
     }
-    final root = Directory(_projectRootPath!).absolute.path;
+    final root = Directory(
+      _requireEffectiveProjectAccessRootPath(),
+    ).absolute.path;
     final target = File(
       '$root${Platform.pathSeparator}$normalized',
     ).absolute.path;
@@ -4470,34 +7278,16 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   }
 
   Future<String?> _manualFolderDialog() async {
-    final controller = TextEditingController(text: _projectRootPath ?? '');
-    final value = await showDialog<String>(
+    return showDialog<String>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('手动输入目录'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              hintText: r'例如: /storage/emulated/0/Download/project',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, controller.text.trim()),
-              child: const Text('确定'),
-            ),
-          ],
-        );
-      },
+      builder: (_) => _TextEditingAlertDialog(
+        title: '手动输入目录',
+        initialValue: _projectRootPath ?? '',
+        hintText: r'例如: /storage/emulated/0/Download/project',
+        submitLabel: '确定',
+        trimOnSubmit: true,
+      ),
     );
-    controller.dispose();
-    return value;
   }
 
   bool _isSharedStoragePath(String path) {
@@ -4612,7 +7402,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         actionHints.add('请在系统设置中打开“所有文件访问权限”');
       }
       if (!internetPermission || !networkStatePermission) {
-        actionHints.add('当前安装包权限异常，请重装最新版本 App');
+        actionHints.add('��ǰ��װ��Ȩ���쳣������װ���°汾 App');
       }
       if (!networkConnected) {
         actionHints.add('请检查系统网络、DNS 或代理设置');
@@ -4738,7 +7528,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   }
 
   String? _drawerExplorerAbsoluteDirectory(String path) {
-    final rootPath = _projectRootPath;
+    final rootPath = _effectiveProjectAccessRootPath();
     if (rootPath == null || rootPath.trim().isEmpty) return null;
     final root = Directory(rootPath).absolute.path;
     if (path == _drawerExplorerRootKey) {
@@ -4761,7 +7551,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     String path, {
     bool force = false,
   }) async {
-    final rootPath = _projectRootPath;
+    final rootPath = _effectiveProjectAccessRootPath();
     if (rootPath == null || rootPath.trim().isEmpty) {
       return;
     }
@@ -4840,7 +7630,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       readError = error.toString();
     }
 
-    if (!mounted || _projectRootPath != rootPath) return;
+    if (!mounted || _effectiveProjectAccessRootPath() != rootPath) return;
     setState(() {
       _drawerExplorerLoadingPaths.remove(path);
       if (readError == null) {
@@ -4890,13 +7680,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         _projectFiles = const [];
         _projectContext = '';
       }
-      _drawerExplorerSelectedPath = null;
-      _drawerExplorerExpandedPaths
-        ..clear()
-        ..add(_drawerExplorerRootKey);
-      _drawerExplorerChildrenByPath.clear();
-      _drawerExplorerLoadingPaths.clear();
-      _drawerExplorerLoadErrors.clear();
+      _resetDrawerExplorerState();
     });
 
     await _loadDrawerExplorerChildren(_drawerExplorerRootKey, force: true);
@@ -4927,6 +7711,16 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         SnackBar(content: Text('已加载根目录：$fileCount 个文件，$dirCount 个目录')),
       );
     }
+  }
+
+  void _resetDrawerExplorerState() {
+    _drawerExplorerSelectedPath = null;
+    _drawerExplorerExpandedPaths
+      ..clear()
+      ..add(_drawerExplorerRootKey);
+    _drawerExplorerChildrenByPath.clear();
+    _drawerExplorerLoadingPaths.clear();
+    _drawerExplorerLoadErrors.clear();
   }
 
   Future<void> _pickProjectFolder() async {
@@ -4998,6 +7792,44 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     return utf8.decode(bytes, allowMalformed: true);
   }
 
+  Future<Map<String, dynamic>> _readFilePart(
+    String relativePath, {
+    required int startLine,
+    required int maxLines,
+  }) async {
+    final content = await _readFileText(relativePath);
+    if (content.startsWith('<binary file:')) {
+      throw Exception('read_file_part does not support binary files');
+    }
+    final lines = const LineSplitter().convert(content);
+    final normalizedStartLine = startLine < 1 ? 1 : startLine;
+    final normalizedMaxLines = maxLines.clamp(1, 400);
+    final startIndex = normalizedStartLine - 1;
+    if (startIndex >= lines.length) {
+      return <String, dynamic>{
+        'ok': true,
+        'path': relativePath,
+        'start_line': normalizedStartLine,
+        'end_line': normalizedStartLine - 1,
+        'total_lines': lines.length,
+        'content': '',
+      };
+    }
+    final endIndexExclusive = min(
+      lines.length,
+      startIndex + normalizedMaxLines,
+    );
+    final slice = lines.sublist(startIndex, endIndexExclusive).join('\n');
+    return <String, dynamic>{
+      'ok': true,
+      'path': relativePath,
+      'start_line': normalizedStartLine,
+      'end_line': endIndexExclusive,
+      'total_lines': lines.length,
+      'content': slice,
+    };
+  }
+
   Future<void> _writeFileText(String relativePath, String content) async {
     final targetPath = _resolveWithinProject(relativePath);
     final file = File(targetPath);
@@ -5005,10 +7837,165 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     await file.writeAsString(content);
   }
 
+  Future<Map<String, dynamic>> _replaceTextInFile({
+    required String relativePath,
+    required String oldText,
+    required String newText,
+    required bool replaceAll,
+  }) async {
+    final targetPath = _resolveWithinProject(relativePath);
+    final file = File(targetPath);
+    if (!await file.exists()) {
+      throw Exception('文件不存�? $relativePath');
+    }
+    final bytes = await file.readAsBytes();
+    if (_looksBinary(bytes)) {
+      throw Exception('replace_in_file does not support binary files');
+    }
+    final content = utf8.decode(bytes, allowMalformed: true);
+    if (oldText.isEmpty) {
+      throw Exception('replace_in_file requires a non-empty old_text value');
+    }
+    if (!content.contains(oldText)) {
+      throw Exception('Target text was not found in $relativePath');
+    }
+    final updated = replaceAll
+        ? content.replaceAll(oldText, newText)
+        : content.replaceFirst(oldText, newText);
+    await file.writeAsString(updated);
+    final replacedCount = replaceAll ? oldText.allMatches(content).length : 1;
+    return <String, dynamic>{
+      'ok': true,
+      'path': relativePath,
+      'replaced_count': replacedCount,
+      'bytes': utf8.encode(updated).length,
+    };
+  }
+
   Future<void> _createDirectory(String relativePath) async {
     final targetPath = _resolveWithinProject(relativePath);
     final dir = Directory(targetPath);
     await dir.create(recursive: true);
+  }
+
+  Future<Map<String, dynamic>> _listDirectoryEntries(
+    String relativePath, {
+    required int limit,
+  }) async {
+    final normalized = relativePath.trim().isEmpty ? '.' : relativePath;
+    final targetPath = _resolveWithinProject(normalized);
+    final directory = Directory(targetPath);
+    if (!await directory.exists()) {
+      throw Exception('目录不存�? $normalized');
+    }
+    final entries = <Map<String, dynamic>>[];
+    final listed = await directory.list(followLinks: false).toList();
+    listed.sort((a, b) {
+      final aDir = a is Directory ? 0 : 1;
+      final bDir = b is Directory ? 0 : 1;
+      if (aDir != bDir) return aDir.compareTo(bDir);
+      return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+    });
+    for (final entity in listed.take(limit)) {
+      final stat = await entity.stat();
+      final relative = _relativeProjectAccessPath(entity.path);
+      entries.add(<String, dynamic>{
+        'path': relative,
+        'name': relative.split('/').last,
+        'is_directory': entity is Directory,
+        'size_bytes': entity is File ? stat.size : 0,
+      });
+    }
+    return <String, dynamic>{
+      'ok': true,
+      'path': normalized == '.' ? '' : _normalizeInputPath(normalized),
+      'count': entries.length,
+      'entries': entries,
+    };
+  }
+
+  Future<Map<String, dynamic>> _readFileInfo(String relativePath) async {
+    final targetPath = _resolveWithinProject(relativePath);
+    final file = File(targetPath);
+    if (await file.exists()) {
+      final bytes = await file.readAsBytes();
+      return <String, dynamic>{
+        'ok': true,
+        'path': _normalizeInputPath(relativePath),
+        'exists': true,
+        'type': 'file',
+        'size_bytes': bytes.length,
+        'binary': _looksBinary(bytes),
+      };
+    }
+    final dir = Directory(targetPath);
+    if (await dir.exists()) {
+      final childCount = await dir.list(followLinks: false).length;
+      return <String, dynamic>{
+        'ok': true,
+        'path': _normalizeInputPath(relativePath),
+        'exists': true,
+        'type': 'directory',
+        'child_count': childCount,
+      };
+    }
+    return <String, dynamic>{
+      'ok': true,
+      'path': _normalizeInputPath(relativePath),
+      'exists': false,
+      'type': 'missing',
+    };
+  }
+
+  Future<Map<String, dynamic>> _grepProjectCode({
+    required String query,
+    required String relativePath,
+    required int limit,
+    required bool caseSensitive,
+  }) async {
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.isEmpty) {
+      throw Exception('grep_code query cannot be empty');
+    }
+    final normalizedRoot = relativePath.trim().isEmpty ? '.' : relativePath;
+    final targetPath = _resolveWithinProject(normalizedRoot);
+    final rootDir = Directory(targetPath);
+    if (!await rootDir.exists()) {
+      throw Exception('目录不存�? $normalizedRoot');
+    }
+    final matches = <Map<String, dynamic>>[];
+    final needle = caseSensitive
+        ? normalizedQuery
+        : normalizedQuery.toLowerCase();
+    await for (final entity in rootDir.list(
+      recursive: true,
+      followLinks: false,
+    )) {
+      if (matches.length >= limit) break;
+      if (entity is! File) continue;
+      final bytes = await entity.readAsBytes();
+      if (_looksBinary(bytes)) continue;
+      final content = utf8.decode(bytes, allowMalformed: true);
+      final lines = const LineSplitter().convert(content);
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i];
+        final haystack = caseSensitive ? line : line.toLowerCase();
+        if (!haystack.contains(needle)) continue;
+        matches.add(<String, dynamic>{
+          'path': _relativeProjectAccessPath(entity.path),
+          'line': i + 1,
+          'content': line.trim(),
+        });
+        if (matches.length >= limit) break;
+      }
+    }
+    return <String, dynamic>{
+      'ok': true,
+      'query': normalizedQuery,
+      'path': normalizedRoot == '.' ? '' : _normalizeInputPath(normalizedRoot),
+      'count': matches.length,
+      'matches': matches,
+    };
   }
 
   Future<void> _deleteEntry(String relativePath) async {
@@ -5024,6 +8011,687 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       return;
     }
     throw Exception('目标不存在: $relativePath');
+  }
+
+  RegExp _globToRegExp(String pattern, {required bool caseSensitive}) {
+    final normalized = pattern.trim().isEmpty ? '*' : pattern.trim();
+    final buffer = StringBuffer('^');
+    for (var i = 0; i < normalized.length; i++) {
+      final char = normalized[i];
+      if (char == '*') {
+        final nextIsStar =
+            i + 1 < normalized.length && normalized[i + 1] == '*';
+        if (nextIsStar) {
+          buffer.write('.*');
+          i++;
+        } else {
+          buffer.write('[^/]*');
+        }
+        continue;
+      }
+      if (char == '?') {
+        buffer.write('[^/]');
+        continue;
+      }
+      if (r'\.[]{}()+-^$|'.contains(char)) {
+        buffer.write('\\$char');
+      } else {
+        buffer.write(char);
+      }
+    }
+    buffer.write(r'$');
+    return RegExp(buffer.toString(), caseSensitive: caseSensitive);
+  }
+
+  bool _shouldIgnoreMirrorRelativePath(String relativePath) {
+    final normalized = _normalizeInputPath(relativePath);
+    if (normalized.isEmpty) return false;
+    final segments = normalized.split('/');
+    if (segments.isEmpty) return false;
+    return _mirrorSyncIgnoredTopLevelDirs.contains(segments.first);
+  }
+
+  String _basename(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final segments = normalized.split('/');
+    return segments.isEmpty ? normalized : segments.last;
+  }
+
+  Future<Map<String, dynamic>> _findProjectFiles({
+    required String pattern,
+    required String relativePath,
+    required int limit,
+    required bool caseSensitive,
+  }) async {
+    final normalizedRoot = relativePath.trim().isEmpty ? '.' : relativePath;
+    final targetPath = _resolveWithinProject(normalizedRoot);
+    final rootDir = Directory(targetPath);
+    if (!await rootDir.exists()) {
+      throw Exception('Directory does not exist: $normalizedRoot');
+    }
+    final matcher = _globToRegExp(pattern, caseSensitive: caseSensitive);
+    final matches = <Map<String, dynamic>>[];
+    await for (final entity in rootDir.list(
+      recursive: true,
+      followLinks: false,
+    )) {
+      if (matches.length >= limit) break;
+      final relative = _relativeProjectAccessPath(entity.path);
+      final name = relative.split('/').last;
+      if (!matcher.hasMatch(relative) && !matcher.hasMatch(name)) {
+        continue;
+      }
+      final type = await FileSystemEntity.type(entity.path, followLinks: false);
+      var sizeBytes = 0;
+      if (type == FileSystemEntityType.file) {
+        try {
+          sizeBytes = (await File(entity.path).stat()).size;
+        } catch (_) {}
+      }
+      matches.add(<String, dynamic>{
+        'path': relative,
+        'name': name,
+        'type': type == FileSystemEntityType.directory ? 'directory' : 'file',
+        if (sizeBytes > 0) 'size_bytes': sizeBytes,
+      });
+    }
+    return <String, dynamic>{
+      'ok': true,
+      'action': 'find_files',
+      'pattern': pattern,
+      'path': normalizedRoot == '.' ? '' : _normalizeInputPath(normalizedRoot),
+      'count': matches.length,
+      'matches': matches,
+    };
+  }
+
+  Future<Map<String, dynamic>> _readFileExists(String relativePath) async {
+    final targetPath = _resolveWithinProject(relativePath);
+    final file = File(targetPath);
+    final dir = Directory(targetPath);
+    final fileExists = await file.exists();
+    final dirExists = await dir.exists();
+    return <String, dynamic>{
+      'ok': true,
+      'action': 'file_exists',
+      'path': _normalizeInputPath(relativePath),
+      'exists': fileExists || dirExists,
+      'type': fileExists ? 'file' : (dirExists ? 'directory' : 'missing'),
+    };
+  }
+
+  Future<void> _copyEntityToResolvedPath(
+    FileSystemEntity source,
+    String targetPath,
+  ) async {
+    if (source is File) {
+      final targetFile = File(targetPath);
+      await targetFile.parent.create(recursive: true);
+      await source.copy(targetFile.path);
+      return;
+    }
+    if (source is Directory) {
+      final targetDir = Directory(targetPath);
+      await targetDir.create(recursive: true);
+      await for (final entity in source.list(
+        recursive: false,
+        followLinks: false,
+      )) {
+        final childTarget =
+            '$targetPath${Platform.pathSeparator}${_basename(entity.path)}';
+        await _copyEntityToResolvedPath(entity, childTarget);
+      }
+      return;
+    }
+    throw Exception('Unsupported entity type: ${source.path}');
+  }
+
+  Future<Map<String, dynamic>> _copyProjectEntry(
+    String fromPath,
+    String toPath,
+  ) async {
+    final sourcePath = _resolveWithinProject(fromPath);
+    final targetPath = _resolveWithinProject(toPath);
+    if (sourcePath == targetPath) {
+      throw Exception('copy_file source and destination must be different');
+    }
+    final sourceFile = File(sourcePath);
+    if (await sourceFile.exists()) {
+      await _copyEntityToResolvedPath(sourceFile, targetPath);
+      return <String, dynamic>{
+        'ok': true,
+        'action': 'copy_file',
+        'from_path': _normalizeInputPath(fromPath),
+        'to_path': _normalizeInputPath(toPath),
+        'type': 'file',
+      };
+    }
+    final sourceDir = Directory(sourcePath);
+    if (await sourceDir.exists()) {
+      await _copyEntityToResolvedPath(sourceDir, targetPath);
+      return <String, dynamic>{
+        'ok': true,
+        'action': 'copy_file',
+        'from_path': _normalizeInputPath(fromPath),
+        'to_path': _normalizeInputPath(toPath),
+        'type': 'directory',
+      };
+    }
+    throw Exception('Source path does not exist: $fromPath');
+  }
+
+  Future<Map<String, dynamic>> _moveProjectEntry(
+    String fromPath,
+    String toPath,
+  ) async {
+    final sourcePath = _resolveWithinProject(fromPath);
+    final targetPath = _resolveWithinProject(toPath);
+    if (sourcePath == targetPath) {
+      throw Exception('move_file source and destination must be different');
+    }
+    final sourceFile = File(sourcePath);
+    if (await sourceFile.exists()) {
+      final targetFile = File(targetPath);
+      await targetFile.parent.create(recursive: true);
+      try {
+        await sourceFile.rename(targetPath);
+      } on FileSystemException {
+        await sourceFile.copy(targetPath);
+        await sourceFile.delete();
+      }
+      return <String, dynamic>{
+        'ok': true,
+        'action': 'move_file',
+        'from_path': _normalizeInputPath(fromPath),
+        'to_path': _normalizeInputPath(toPath),
+        'type': 'file',
+      };
+    }
+    final sourceDir = Directory(sourcePath);
+    if (await sourceDir.exists()) {
+      final targetDir = Directory(targetPath);
+      await targetDir.parent.create(recursive: true);
+      try {
+        await sourceDir.rename(targetPath);
+      } on FileSystemException {
+        await _copyEntityToResolvedPath(sourceDir, targetPath);
+        await sourceDir.delete(recursive: true);
+      }
+      return <String, dynamic>{
+        'ok': true,
+        'action': 'move_file',
+        'from_path': _normalizeInputPath(fromPath),
+        'to_path': _normalizeInputPath(toPath),
+        'type': 'directory',
+      };
+    }
+    throw Exception('Source path does not exist: $fromPath');
+  }
+
+  Future<Map<String, dynamic>> _applyStructuredPatch({
+    required _AiRoundDraft roundDraft,
+    required List<dynamic> operations,
+  }) async {
+    final results = <Map<String, dynamic>>[];
+    for (final item in operations) {
+      if (item is! Map) {
+        throw Exception('apply_patch operations must be objects');
+      }
+      final op = item.map((key, value) => MapEntry(key.toString(), value));
+      final type = _readArgString(op, 'type').trim();
+      switch (type) {
+        case 'write':
+        case 'create_file':
+          final path = _readArgString(op, 'path');
+          final content = _readArgString(op, 'content', fallback: '');
+          await _captureUndoSnapshotIfNeeded(roundDraft, path);
+          await _writeFileText(path, content);
+          results.add(<String, dynamic>{
+            'type': type,
+            'path': _normalizeInputPath(path),
+            'bytes': utf8.encode(content).length,
+          });
+          break;
+        case 'replace':
+          final path = _readArgString(op, 'path');
+          await _captureUndoSnapshotIfNeeded(roundDraft, path);
+          results.add(
+            await _replaceTextInFile(
+              relativePath: path,
+              oldText: _readArgString(op, 'old_text'),
+              newText: _readArgString(op, 'new_text', fallback: ''),
+              replaceAll: _readArgBool(op, 'replace_all', fallback: false),
+            ),
+          );
+          break;
+        case 'create_dir':
+          final path = _readArgString(op, 'path');
+          await _captureUndoSnapshotIfNeeded(roundDraft, path);
+          await _createDirectory(path);
+          results.add(<String, dynamic>{
+            'type': type,
+            'path': _normalizeInputPath(path),
+          });
+          break;
+        case 'delete':
+        case 'delete_entry':
+          final path = _readArgString(op, 'path');
+          await _captureUndoSnapshotIfNeeded(roundDraft, path);
+          await _deleteEntry(path);
+          results.add(<String, dynamic>{
+            'type': type,
+            'path': _normalizeInputPath(path),
+          });
+          break;
+        case 'move':
+          final fromPath = _readArgString(op, 'from_path');
+          final toPath = _readArgString(op, 'to_path');
+          await _captureUndoSnapshotIfNeeded(roundDraft, fromPath);
+          await _captureUndoSnapshotIfNeeded(roundDraft, toPath);
+          results.add(await _moveProjectEntry(fromPath, toPath));
+          break;
+        case 'copy':
+          final fromPath = _readArgString(op, 'from_path');
+          final toPath = _readArgString(op, 'to_path');
+          await _captureUndoSnapshotIfNeeded(roundDraft, toPath);
+          results.add(await _copyProjectEntry(fromPath, toPath));
+          break;
+        default:
+          throw Exception('Unsupported apply_patch operation: $type');
+      }
+    }
+    return <String, dynamic>{
+      'ok': true,
+      'action': 'apply_patch',
+      'count': results.length,
+      'results': results,
+    };
+  }
+
+  String _quoteShellArg(String value) {
+    if (value.isEmpty) return "''";
+    return "'${value.replaceAll("'", "'\"'\"'")}'";
+  }
+
+  Future<Map<String, dynamic>> _runGitCommand(
+    List<String> args, {
+    int timeoutMs = 20000,
+    int maxOutputBytes = 131072,
+  }) async {
+    final command = 'git ${args.map(_quoteShellArg).join(' ')}';
+    final result = await _executePrimaryBackendCommand(
+      command: command,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+    );
+    return <String, dynamic>{
+      'ok': result['ok'] == true,
+      'action': 'git',
+      'command': command,
+      ...result,
+    };
+  }
+
+  Future<Map<String, dynamic>> _runGitStatusTool({
+    int timeoutMs = 20000,
+    int maxOutputBytes = 131072,
+  }) {
+    return _runGitCommand(
+      const <String>['status', '--short', '--branch'],
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+    );
+  }
+
+  Future<Map<String, dynamic>> _runGitDiffTool({
+    String path = '',
+    bool staged = false,
+    int timeoutMs = 20000,
+    int maxOutputBytes = 131072,
+  }) {
+    final args = <String>['diff'];
+    if (staged) {
+      args.add('--staged');
+    }
+    final normalizedPath = _normalizeInputPath(path);
+    if (normalizedPath.isNotEmpty) {
+      args
+        ..add('--')
+        ..add(normalizedPath);
+    }
+    return _runGitCommand(
+      args,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+    );
+  }
+
+  Future<Map<String, dynamic>> _runGitLogTool({
+    int limit = 20,
+    int timeoutMs = 20000,
+    int maxOutputBytes = 131072,
+  }) {
+    return _runGitCommand(
+      <String>[
+        'log',
+        '--oneline',
+        '--decorate',
+        '-n',
+        limit.clamp(1, 80).toString(),
+      ],
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+    );
+  }
+
+  Future<Map<String, dynamic>> _runGitShowTool({
+    required String ref,
+    String path = '',
+    int timeoutMs = 20000,
+    int maxOutputBytes = 131072,
+  }) {
+    final args = <String>['show', ref];
+    final normalizedPath = _normalizeInputPath(path);
+    if (normalizedPath.isNotEmpty) {
+      args
+        ..add('--')
+        ..add(normalizedPath);
+    }
+    return _runGitCommand(
+      args,
+      timeoutMs: timeoutMs,
+      maxOutputBytes: maxOutputBytes,
+    );
+  }
+
+  Future<Map<String, String>> _collectProjectFileMap(String rootPath) async {
+    final files = <String, String>{};
+    final root = Directory(rootPath);
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
+      final relative = _normalizeInputPath(
+        _relativePath(entity.path, rootPath),
+      );
+      if (relative.isEmpty || _shouldIgnoreMirrorRelativePath(relative)) {
+        continue;
+      }
+      if (entity is File) {
+        files[relative] = entity.path;
+      }
+    }
+    return files;
+  }
+
+  Future<Map<String, bool>> _collectProjectDirectoryMap(String rootPath) async {
+    final directories = <String, bool>{};
+    final root = Directory(rootPath);
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
+      final relative = _normalizeInputPath(
+        _relativePath(entity.path, rootPath),
+      );
+      if (relative.isEmpty || _shouldIgnoreMirrorRelativePath(relative)) {
+        continue;
+      }
+      if (entity is Directory) {
+        directories[relative] = true;
+      }
+    }
+    return directories;
+  }
+
+  Future<bool> _filesHaveSameContent(String leftPath, String rightPath) async {
+    final leftFile = File(leftPath);
+    final rightFile = File(rightPath);
+    final leftStat = await leftFile.stat();
+    final rightStat = await rightFile.stat();
+    if (leftStat.size != rightStat.size) {
+      return false;
+    }
+    final leftBytes = await leftFile.readAsBytes();
+    final rightBytes = await rightFile.readAsBytes();
+    return listEquals(leftBytes, rightBytes);
+  }
+
+  Future<List<_MirrorChangeEntry>> _computeMirrorChangeEntries({
+    required String sourceRoot,
+    required String mirrorRoot,
+  }) async {
+    final sourceFiles = await _collectProjectFileMap(sourceRoot);
+    final mirrorFiles = await _collectProjectFileMap(mirrorRoot);
+    final sourceDirs = await _collectProjectDirectoryMap(sourceRoot);
+    final mirrorDirs = await _collectProjectDirectoryMap(mirrorRoot);
+    final allPaths = <String>{
+      ...sourceFiles.keys,
+      ...mirrorFiles.keys,
+      ...sourceDirs.keys,
+      ...mirrorDirs.keys,
+    }.toList()..sort();
+    final entries = <_MirrorChangeEntry>[];
+    for (final path in allPaths) {
+      final sourceFile = sourceFiles[path];
+      final mirrorFile = mirrorFiles[path];
+      final sourceDir = sourceDirs[path] == true;
+      final mirrorDir = mirrorDirs[path] == true;
+      final sourceExists = sourceFile != null || sourceDir;
+      final mirrorExists = mirrorFile != null || mirrorDir;
+      if (sourceExists && !mirrorExists) {
+        entries.add(
+          _MirrorChangeEntry(
+            path: path,
+            changeType: 'deleted',
+            entityType: sourceDir ? 'directory' : 'file',
+          ),
+        );
+        continue;
+      }
+      if (!sourceExists && mirrorExists) {
+        entries.add(
+          _MirrorChangeEntry(
+            path: path,
+            changeType: 'added',
+            entityType: mirrorDir ? 'directory' : 'file',
+          ),
+        );
+        continue;
+      }
+      if (sourceDir != mirrorDir) {
+        entries.add(
+          _MirrorChangeEntry(
+            path: path,
+            changeType: 'type_changed',
+            entityType: mirrorDir ? 'directory' : 'file',
+          ),
+        );
+        continue;
+      }
+      if (sourceFile != null &&
+          mirrorFile != null &&
+          !await _filesHaveSameContent(sourceFile, mirrorFile)) {
+        entries.add(
+          _MirrorChangeEntry(
+            path: path,
+            changeType: 'modified',
+            entityType: 'file',
+          ),
+        );
+      }
+    }
+    return entries;
+  }
+
+  String _buildMirrorPreviewSummary(List<_MirrorChangeEntry> entries) {
+    if (entries.isEmpty) {
+      return '镜像工作区和源目录当前一致。';
+    }
+    var added = 0;
+    var modified = 0;
+    var deleted = 0;
+    var typeChanged = 0;
+    for (final entry in entries) {
+      switch (entry.changeType) {
+        case 'added':
+          added++;
+          break;
+        case 'modified':
+          modified++;
+          break;
+        case 'deleted':
+          deleted++;
+          break;
+        case 'type_changed':
+          typeChanged++;
+          break;
+      }
+    }
+    return '检测到 ${entries.length} 项变更：新增 $added，修改 $modified，删除 $deleted，类型变化 $typeChanged。';
+  }
+
+  Future<void> _previewMirrorWorkspaceChanges() async {
+    if (_loadingMirrorPreview) return;
+    final sourceRoot = _projectRootPath?.trim();
+    if (sourceRoot == null || sourceRoot.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先选择项目目录')));
+      return;
+    }
+    if (!_hasActiveMirrorWorkspace) {
+      await _ensureMirroredWorkspaceIfAvailable();
+    }
+    final mirrorRoot = _localRuntimeStatus.activeWorkspacePath.trim();
+    if (mirrorRoot.isEmpty) {
+      throw Exception('Mirror workspace is not ready.');
+    }
+    setState(() {
+      _loadingMirrorPreview = true;
+      _runtimeWorkbenchOutput = '正在比较镜像工作区与源目录...';
+    });
+    try {
+      final entries = await _computeMirrorChangeEntries(
+        sourceRoot: sourceRoot,
+        mirrorRoot: mirrorRoot,
+      );
+      if (!mounted) return;
+      setState(() {
+        _mirrorPreviewEntries
+          ..clear()
+          ..addAll(entries);
+        _mirrorPreviewSummary = _buildMirrorPreviewSummary(entries);
+        _runtimeWorkbenchOutput = _mirrorPreviewSummary;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingMirrorPreview = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _syncMirrorWorkspaceBackToSource() async {
+    if (_syncingMirrorToSource) return;
+    final sourceRoot = _projectRootPath?.trim();
+    final mirrorRoot = _localRuntimeStatus.activeWorkspacePath.trim();
+    if (sourceRoot == null || sourceRoot.isEmpty) {
+      throw Exception('Project root is not selected.');
+    }
+    if (mirrorRoot.isEmpty) {
+      throw Exception('Mirror workspace is not ready.');
+    }
+    setState(() {
+      _syncingMirrorToSource = true;
+      _runtimeWorkbenchOutput = '正在把镜像工作区同步回源目录...';
+    });
+    try {
+      final entries = await _computeMirrorChangeEntries(
+        sourceRoot: sourceRoot,
+        mirrorRoot: mirrorRoot,
+      );
+      for (final entry in entries) {
+        final sourcePath =
+            '$sourceRoot${Platform.pathSeparator}${entry.path.replaceAll('/', Platform.pathSeparator)}';
+        final mirrorPath =
+            '$mirrorRoot${Platform.pathSeparator}${entry.path.replaceAll('/', Platform.pathSeparator)}';
+        if (entry.changeType == 'deleted') {
+          final sourceFile = File(sourcePath);
+          if (await sourceFile.exists()) {
+            await sourceFile.delete();
+          } else {
+            final sourceDir = Directory(sourcePath);
+            if (await sourceDir.exists()) {
+              await sourceDir.delete(recursive: true);
+            }
+          }
+          continue;
+        }
+        final sourceFile = File(sourcePath);
+        if (await sourceFile.exists()) {
+          await sourceFile.delete();
+        }
+        final sourceDir = Directory(sourcePath);
+        if (await sourceDir.exists()) {
+          await sourceDir.delete(recursive: true);
+        }
+        if (entry.entityType == 'directory') {
+          await Directory(sourcePath).create(recursive: true);
+        } else {
+          await _copyEntityToResolvedPath(File(mirrorPath), sourcePath);
+        }
+      }
+      await _loadProjectFolder(sourceRoot, silent: true);
+      await _previewMirrorWorkspaceChanges();
+      if (!mounted) return;
+      setState(() {
+        _runtimeWorkbenchOutput = '同步完成，共处理 ${entries.length} 项镜像差异。';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _syncingMirrorToSource = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _runRuntimeWorkbenchCommand({
+    required String title,
+    required Future<Map<String, dynamic>> Function() action,
+  }) async {
+    if (_runningRuntimeWorkbenchCommand) return;
+    setState(() {
+      _runningRuntimeWorkbenchCommand = true;
+      _runtimeWorkbenchOutput = '$title...';
+    });
+    try {
+      final result = await action();
+      final stdout = result['stdout']?.toString().trim() ?? '';
+      final stderr = result['stderr']?.toString().trim() ?? '';
+      final error = result['error']?.toString().trim() ?? '';
+      final parts = <String>[
+        title,
+        if (result['command'] != null) '命令: ${result['command']}',
+        if (stdout.isNotEmpty) 'stdout:\n$stdout',
+        if (stderr.isNotEmpty) 'stderr:\n$stderr',
+        if (error.isNotEmpty) 'error:\n$error',
+      ];
+      if (mounted) {
+        setState(() {
+          _runtimeWorkbenchOutput = parts.join('\n\n');
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _runtimeWorkbenchOutput = '$title 失败\n\n$error';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _runningRuntimeWorkbenchCommand = false;
+        });
+      }
+    }
   }
 
   Future<bool> _maybeHandleFsToolCommand(
@@ -5189,11 +8857,14 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     }
   }
 
+  // ignore: unused_element
   Future<void> _replyWithModel({
     required _AiRoundDraft roundDraft,
     required String conversationId,
     List<_OutgoingImageAttachment> attachedImages = const [],
   }) async {
+    _resetAgentExecutionConsole();
+    _recordAgentProgress('准备请求模型', detail: '正在检查连接配置、项目上下文和可用工具。');
     _updateReplyProgress('校验连接配置');
     final config = _activeProviderConfig;
     final baseUrl = config.baseUrl.trim();
@@ -5240,9 +8911,15 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     var webSearchCount = 0;
     var fetchWebpageCount = 0;
     var downloadAssetCount = 0;
+    var emittedToolPlanMessage = false;
+    final collectedToolOutputs = <String, String>{};
     const maxToolRounds = 12;
 
     for (var round = 0; round < maxToolRounds; round++) {
+      _recordAgentProgress(
+        '模型思考中',
+        detail: '第 ${round + 1} / $maxToolRounds 轮推理。',
+      );
       _updateReplyProgress('模型推理中（第${round + 1}轮）');
       if (_stopReplyRequested) {
         throw const _ModelRequestCancelledException();
@@ -5272,16 +8949,28 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       });
 
       if (result.toolCalls.isEmpty) {
+        _recordAgentProgress('整理最终回复', detail: '工具调用已结束，正在组织最终回答。');
         _updateReplyProgress('整理回复内容');
         final replyText = result.content.trim();
         if (replyText.isEmpty) {
           throw Exception('模型返回了空内容，请重试或切换模型。');
         }
         _appendMessage(
-          ChatMessage(
-            role: ChatRole.assistant,
+          _buildStructuredAssistantMessage(
             text: replyText,
             time: _timeNow(),
+            reasoningSummary: _buildReasoningSummary(
+              content: result.content,
+              toolCalls: result.toolCalls,
+              rawReasoning: result.reasoningSummary,
+            ),
+            toolOutputsById: collectedToolOutputs,
+            citations: _collectCitationPartsFromToolResults(
+              collectedToolOutputs.values,
+            ),
+            metadata: result.metadata,
+            progressEntries: _snapshotAgentProgressEntries(),
+            toolActivityEntries: _snapshotToolActivityEntries(),
           ),
           conversationId: conversationId,
         );
@@ -5289,11 +8978,36 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         return;
       }
 
+      if (!emittedToolPlanMessage) {
+        final planText = _buildAssistantPlanMessage(
+          content: result.content,
+          toolCalls: result.toolCalls,
+        );
+        emittedToolPlanMessage = true;
+        _agentPlanSummary = _singleLinePreview(planText, maxLength: 120);
+        if (_isReplySectionEnabled(_replySectionAgentProgress)) {
+          _appendMessage(
+            ChatMessage(
+              role: ChatRole.assistant,
+              text: planText,
+              time: _timeNow(),
+            ),
+            conversationId: conversationId,
+          );
+        }
+        _recordAgentProgress('已给出执行方案', detail: _agentPlanSummary);
+      }
+
       for (final call in result.toolCalls) {
+        _recordAgentProgress(
+          _toolProgressTitle(call),
+          detail: _toolArgsPreview(call.argumentsJson),
+        );
         _updateReplyProgress('执行工具 ${call.name}');
         if (_stopReplyRequested) {
           throw const _ModelRequestCancelledException();
         }
+        _recordAgentToolStart(call);
         _appendMessage(
           ChatMessage(
             role: ChatRole.system,
@@ -5304,7 +9018,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           conversationId: conversationId,
         );
 
-        String toolResult;
+        var toolResult = '';
+        var toolStatus = 'done';
         final signature = _toolCallSignature(call);
         final repeatedCount = (repeatedToolCalls[signature] ?? 0) + 1;
         repeatedToolCalls[signature] = repeatedCount;
@@ -5327,8 +9042,10 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
               fetchWebpageCount: fetchWebpageCount,
               downloadAssetCount: downloadAssetCount,
             );
+            toolStatus = 'failed';
           } else {
             toolResult = toolResultCache[signature]!;
+            toolStatus = 'cached';
           }
         } else if (call.name == 'web_search' &&
             webSearchCount > 3 &&
@@ -5342,12 +9059,14 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             fetchWebpageCount: fetchWebpageCount,
             downloadAssetCount: downloadAssetCount,
           );
+          toolStatus = 'failed';
         } else {
           try {
             toolResult = await _executeFsTool(call, roundDraft: roundDraft);
           } catch (error) {
             toolResult = jsonEncode({'ok': false, 'error': error.toString()});
           }
+          toolStatus = _toolFinishStatus(toolResult, cached: false);
           if (_shouldCacheToolResult(call.name)) {
             toolResultCache[signature] = toolResult;
           }
@@ -5358,6 +9077,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           'tool_call_id': call.id,
           'content': toolResult,
         });
+        collectedToolOutputs[call.id] = toolResult;
+        _recordAgentToolFinish(call, toolResult, status: toolStatus);
 
         _appendMessage(
           ChatMessage(
@@ -5371,6 +9092,471 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     }
 
     throw Exception('工具调用轮次超过上限(12次)。请先指定更明确的下载链接或目标文件。');
+  }
+
+  Future<void> _replyWithModelOrchestrated({
+    required _AiRoundDraft roundDraft,
+    required String conversationId,
+    List<_OutgoingImageAttachment> attachedImages = const [],
+  }) async {
+    _resetAgentExecutionConsole();
+    _recordAgentProgress('准备请求模型', detail: '正在检查连接配置、项目上下文和可用工具。');
+    _updateReplyProgress('校验连接配置');
+    final config = _activeProviderConfig;
+    final baseUrl = config.baseUrl.trim();
+    final apiPath = config.apiPath.trim();
+    final apiKey = config.apiKey.trim();
+    final model = config.model.trim();
+    final extraHeaders = config.extraHeaders;
+
+    if (baseUrl.isEmpty) {
+      throw Exception('请先在设置中填写 Base URL');
+    }
+    if (model.isEmpty) {
+      throw Exception('请先在设置中填写模型名');
+    }
+    if (apiKey.isEmpty &&
+        !_providersMaySkipApiKey.contains(_activeProviderId)) {
+      throw Exception('请先在设置中填写 API Key');
+    }
+    if (!_chatCapableProviders.contains(_activeProviderId)) {
+      throw Exception(
+        '当前提供方尚未接入聊天协议。请先切换到 OpenAI / DeepSeek / OpenRouter / LM Studio / Groq / Mistral / Azure OpenAI / 自定义 OpenAI 兼容接口。',
+      );
+    }
+
+    final uri = _buildChatCompletionEndpoint(
+      providerId: _activeProviderId,
+      baseUrl: baseUrl,
+      apiPath: apiPath,
+    );
+    final headers = _buildChatHeaders(
+      providerId: _activeProviderId,
+      apiKey: apiKey,
+      extraHeaders: extraHeaders,
+    );
+    final tools = _buildActiveTools();
+    final reasoningEffort = _normalizeReasoningEffort(config.reasoningEffort);
+    final temperature = _temperatureForReasoningEffort(reasoningEffort);
+    final conversation = _buildConversationMessages(
+      reasoningEffort: reasoningEffort,
+      attachedImages: attachedImages,
+    );
+    final toolResultCache = <String, String>{};
+    final repeatedToolCalls = <String, int>{};
+    final toolFamilyCounts = <String, int>{};
+    var webSearchCount = 0;
+    var fetchWebpageCount = 0;
+    var downloadAssetCount = 0;
+    var readFileCount = 0;
+    var grepCodeCount = 0;
+    var runCommandCount = 0;
+    var blockedExplorationCount = 0;
+    var emittedToolPlanMessage = false;
+    final collectedToolOutputs = <String, String>{};
+    const maxToolRounds = 12;
+    const softToolRoundLimit = 8;
+
+    String buildConvergenceSummary({
+      required int roundNumber,
+      required bool summaryMode,
+    }) {
+      final parts = <String>[
+        '第 $roundNumber / $maxToolRounds 轮',
+        summaryMode ? '已切换总结模式' : '正常执行',
+      ];
+      if (readFileCount > 0) {
+        parts.add('读文件 $readFileCount');
+      }
+      if (grepCodeCount > 0) {
+        parts.add('代码检索 $grepCodeCount');
+      }
+      if (runCommandCount > 0) {
+        parts.add('命令执行 $runCommandCount');
+      }
+      if (blockedExplorationCount > 0) {
+        parts.add('已阻止扩散探索 $blockedExplorationCount');
+      }
+      final hotFamilies =
+          toolFamilyCounts.entries.where((entry) => entry.value > 0).toList()
+            ..sort((a, b) => b.value.compareTo(a.value));
+      if (hotFamilies.isNotEmpty) {
+        parts.add(
+          hotFamilies
+              .take(2)
+              .map((entry) => '${entry.key} ${entry.value}')
+              .join(' / '),
+        );
+      }
+      return parts.join(' · ');
+    }
+
+    _updateAgentExecutionState(
+      phase: tools.isEmpty ? '回复' : '规划',
+      currentRound: 0,
+      maxRounds: maxToolRounds,
+      summaryMode: false,
+      convergenceSummary: tools.isEmpty
+          ? '当前无工具可用，将直接生成回复。'
+          : '先输出执行方案，再进入工具执行。',
+      convergenceWarning: '',
+      toolFamilyCounts: toolFamilyCounts,
+    );
+
+    if (tools.isNotEmpty) {
+      _recordAgentProgress('生成执行方案', detail: '先给出方案，再开始工具执行。');
+      _updateReplyProgress('生成执行方案');
+      final planningPayload = <String, dynamic>{
+        'model': model,
+        'messages': <Map<String, dynamic>>[
+          ...conversation,
+          <String, dynamic>{
+            'role': 'system',
+            'content': _buildPlanningInstruction(),
+          },
+        ],
+        'temperature': temperature,
+      };
+      final planningResult = await _requestChatCompletion(
+        uri: uri,
+        headers: headers,
+        payload: planningPayload,
+        improveNetworkCompatibility: config.improveNetworkCompatibility,
+      );
+      final planText = planningResult.content.trim().isEmpty
+          ? '我会先定位相关目录和关键文件，再做必要修改与验证，最后给你一个明确结论。'
+          : planningResult.content.trim();
+      conversation.add(<String, dynamic>{
+        'role': 'assistant',
+        'content': planText,
+      });
+      conversation.add(<String, dynamic>{
+        'role': 'system',
+        'content': _buildExecutionInstruction(),
+      });
+      emittedToolPlanMessage = true;
+      _updateAgentExecutionState(
+        phase: '执行',
+        convergenceSummary: '执行前方案已生成，准备进入工具回合。',
+      );
+      if (mounted) {
+        setState(() {
+          _agentPlanSummary = _singleLinePreview(planText, maxLength: 120);
+        });
+      } else {
+        _agentPlanSummary = _singleLinePreview(planText, maxLength: 120);
+      }
+      if (_isReplySectionEnabled(_replySectionAgentProgress)) {
+        _appendMessage(
+          ChatMessage(
+            role: ChatRole.assistant,
+            text: planText,
+            time: _timeNow(),
+          ),
+          conversationId: conversationId,
+        );
+      }
+      _recordAgentProgress('已给出执行方案', detail: _agentPlanSummary);
+    }
+
+    for (var round = 0; round < maxToolRounds; round++) {
+      final roundNumber = round + 1;
+      final summaryMode =
+          roundNumber > softToolRoundLimit || blockedExplorationCount >= 2;
+      final forceFinalAnswer = roundNumber >= maxToolRounds - 1;
+      final convergenceSummary = buildConvergenceSummary(
+        roundNumber: roundNumber,
+        summaryMode: summaryMode,
+      );
+      _updateAgentExecutionState(
+        phase: forceFinalAnswer
+            ? '最终总结'
+            : summaryMode
+            ? '总结收敛'
+            : '执行',
+        currentRound: roundNumber,
+        maxRounds: maxToolRounds,
+        summaryMode: summaryMode,
+        convergenceSummary: convergenceSummary,
+        toolFamilyCounts: toolFamilyCounts,
+      );
+      _recordAgentProgress(
+        forceFinalAnswer
+            ? '模型正在输出最终结论'
+            : summaryMode
+            ? '模型进入总结模式'
+            : '模型思考中',
+        detail: convergenceSummary,
+      );
+      _updateReplyProgress(
+        forceFinalAnswer
+            ? '整理最终结论'
+            : summaryMode
+            ? '总结现有结果'
+            : '模型推理中（第 $roundNumber 轮）',
+      );
+      if (_stopReplyRequested) {
+        throw const _ModelRequestCancelledException();
+      }
+
+      final requestMessages = <Map<String, dynamic>>[...conversation];
+      if (forceFinalAnswer) {
+        requestMessages.add(<String, dynamic>{
+          'role': 'system',
+          'content': _buildForcedFinalInstruction(
+            currentRound: roundNumber,
+            maxRounds: maxToolRounds,
+            convergenceReason: _agentConvergenceWarning.isNotEmpty
+                ? _agentConvergenceWarning
+                : convergenceSummary,
+          ),
+        });
+      } else if (summaryMode) {
+        requestMessages.add(<String, dynamic>{
+          'role': 'system',
+          'content': _buildSummaryModeInstruction(
+            currentRound: roundNumber,
+            maxRounds: maxToolRounds,
+            convergenceReason: _agentConvergenceWarning.isNotEmpty
+                ? _agentConvergenceWarning
+                : convergenceSummary,
+          ),
+        });
+      }
+
+      final payload = <String, dynamic>{
+        'model': model,
+        'messages': requestMessages,
+        'temperature': temperature,
+      };
+      if (tools.isNotEmpty && !forceFinalAnswer) {
+        payload['tools'] = tools;
+        payload['tool_choice'] = 'auto';
+      }
+
+      final result = await _requestChatCompletion(
+        uri: uri,
+        headers: headers,
+        payload: payload,
+        improveNetworkCompatibility: config.improveNetworkCompatibility,
+      );
+
+      conversation.add(<String, dynamic>{
+        'role': 'assistant',
+        'content': result.content,
+        if (result.toolCalls.isNotEmpty)
+          'tool_calls': result.toolCalls.map((call) => call.toMap()).toList(),
+      });
+
+      if (result.toolCalls.isEmpty) {
+        _recordAgentProgress('整理最终回复', detail: '工具调用已结束，正在组织最终回答。');
+        _updateAgentExecutionState(
+          phase: '完成',
+          convergenceSummary: '工具执行已结束，模型正在输出最终答复。',
+        );
+        _updateReplyProgress('整理回复内容');
+        final replyText = result.content.trim();
+        if (replyText.isEmpty) {
+          throw Exception('模型返回了空内容，请重试或切换模型。');
+        }
+        _appendMessage(
+          _buildStructuredAssistantMessage(
+            text: replyText,
+            time: _timeNow(),
+            reasoningSummary: _buildReasoningSummary(
+              content: result.content,
+              toolCalls: result.toolCalls,
+              rawReasoning: result.reasoningSummary,
+            ),
+            toolOutputsById: collectedToolOutputs,
+            citations: _collectCitationPartsFromToolResults(
+              collectedToolOutputs.values,
+            ),
+            metadata: result.metadata,
+            progressEntries: _snapshotAgentProgressEntries(),
+            toolActivityEntries: _snapshotToolActivityEntries(),
+          ),
+          conversationId: conversationId,
+        );
+        _updateReplyProgress('回复完成');
+        return;
+      }
+
+      if (!emittedToolPlanMessage) {
+        final planText = _buildAssistantPlanMessage(
+          content: result.content,
+          toolCalls: result.toolCalls,
+        );
+        emittedToolPlanMessage = true;
+        if (mounted) {
+          setState(() {
+            _agentPlanSummary = _singleLinePreview(planText, maxLength: 120);
+          });
+        } else {
+          _agentPlanSummary = _singleLinePreview(planText, maxLength: 120);
+        }
+        if (_isReplySectionEnabled(_replySectionAgentProgress)) {
+          _appendMessage(
+            ChatMessage(
+              role: ChatRole.assistant,
+              text: planText,
+              time: _timeNow(),
+            ),
+            conversationId: conversationId,
+          );
+        }
+        _recordAgentProgress('已给出执行方案', detail: _agentPlanSummary);
+      }
+
+      for (final call in result.toolCalls) {
+        final family = _toolFamily(call.name);
+        final familyCount = (toolFamilyCounts[family] ?? 0) + 1;
+        toolFamilyCounts[family] = familyCount;
+        if (call.name == 'read_file' || call.name == 'read_file_part') {
+          readFileCount++;
+        } else if (call.name == 'grep_code') {
+          grepCodeCount++;
+        } else if (call.name == 'run_command') {
+          runCommandCount++;
+        }
+        _updateAgentExecutionState(
+          toolFamilyCounts: toolFamilyCounts,
+          convergenceSummary: buildConvergenceSummary(
+            roundNumber: roundNumber,
+            summaryMode: summaryMode,
+          ),
+        );
+        _recordAgentProgress(
+          _toolProgressTitle(call),
+          detail: _toolArgsPreview(call.argumentsJson),
+        );
+        _updateReplyProgress('执行工具 ${call.name}');
+        if (_stopReplyRequested) {
+          throw const _ModelRequestCancelledException();
+        }
+        _recordAgentToolStart(call);
+        _appendMessage(
+          ChatMessage(
+            role: ChatRole.system,
+            text:
+                'AI 调用工具: ${call.name} ${_toolArgsPreview(call.argumentsJson)}',
+            time: _timeNow(),
+          ),
+          conversationId: conversationId,
+        );
+
+        var toolResult = '';
+        var toolStatus = 'done';
+        final signature = _toolCallSignature(call);
+        final repeatedCount = (repeatedToolCalls[signature] ?? 0) + 1;
+        repeatedToolCalls[signature] = repeatedCount;
+        if (call.name == 'web_search') {
+          webSearchCount++;
+        } else if (call.name == 'fetch_webpage') {
+          fetchWebpageCount++;
+        } else if (call.name == 'download_asset') {
+          downloadAssetCount++;
+        }
+
+        String? convergenceBlockReason;
+        if (toolResultCache.containsKey(signature)) {
+          if (_isExplorationTool(call.name) && repeatedCount >= 3) {
+            convergenceBlockReason = '检测到重复调用同一组工具参数，继续$family很可能不会收敛。';
+          } else {
+            toolResult = toolResultCache[signature]!;
+            toolStatus = 'cached';
+          }
+        } else if (_isExplorationTool(call.name) &&
+            familyCount > _toolFamilyRoundLimit(call.name)) {
+          convergenceBlockReason =
+              '$family 已达到本轮上限（${_toolFamilyRoundLimit(call.name)} 次），继续探索收益很低。';
+        } else if (summaryMode &&
+            _isExplorationTool(call.name) &&
+            (readFileCount >= 3 ||
+                grepCodeCount >= 2 ||
+                runCommandCount > 0 ||
+                blockedExplorationCount > 0)) {
+          convergenceBlockReason = '已进入总结模式，当前信息已基本足够，停止继续$family。';
+        } else if (call.name == 'web_search' &&
+            webSearchCount > 3 &&
+            fetchWebpageCount == 0 &&
+            downloadAssetCount == 0) {
+          toolResult = _buildToolLoopGuardResult(
+            call: call,
+            repeatedCount: repeatedCount,
+            reason: '搜索次数已超过上限 3 次。请改为 fetch_webpage 读取候选链接，随后再下载资源。',
+            webSearchCount: webSearchCount,
+            fetchWebpageCount: fetchWebpageCount,
+            downloadAssetCount: downloadAssetCount,
+          );
+          toolStatus = 'failed';
+        } else if (forceFinalAnswer && _isExplorationTool(call.name)) {
+          convergenceBlockReason = '已进入最后总结回合，不再执行新的探索工具。';
+        }
+
+        if (convergenceBlockReason != null) {
+          blockedExplorationCount++;
+          _updateAgentExecutionState(
+            convergenceWarning: convergenceBlockReason,
+            convergenceSummary: buildConvergenceSummary(
+              roundNumber: roundNumber,
+              summaryMode: true,
+            ),
+          );
+          _recordAgentProgress(
+            '探索未收敛，停止继续扩散',
+            detail: convergenceBlockReason,
+            updateLiveStatus: false,
+          );
+          toolResult = _buildConvergenceGuardResult(
+            call: call,
+            reason: convergenceBlockReason,
+            repeatedCount: repeatedCount,
+            toolFamilyCounts: toolFamilyCounts,
+          );
+          toolStatus = 'failed';
+        } else if (toolStatus != 'cached') {
+          try {
+            toolResult = await _executeFsTool(call, roundDraft: roundDraft);
+          } catch (error) {
+            toolResult = jsonEncode({'ok': false, 'error': error.toString()});
+          }
+          toolStatus = _toolFinishStatus(toolResult, cached: false);
+          if (_shouldCacheToolResult(call.name)) {
+            toolResultCache[signature] = toolResult;
+          }
+        }
+
+        conversation.add(<String, dynamic>{
+          'role': 'tool',
+          'tool_call_id': call.id,
+          'content': toolResult,
+        });
+        collectedToolOutputs[call.id] = toolResult;
+        _recordAgentToolFinish(call, toolResult, status: toolStatus);
+
+        _appendMessage(
+          ChatMessage(
+            role: ChatRole.system,
+            text: '工具结果(${call.name}): ${_summarizeForLog(toolResult)}',
+            time: _timeNow(),
+          ),
+          conversationId: conversationId,
+        );
+      }
+    }
+
+    final stopReason = _agentConvergenceWarning.isNotEmpty
+        ? _agentConvergenceWarning
+        : '模型连续调用工具但未收敛，已停止自动探索。';
+    _updateAgentExecutionState(
+      phase: '已停止',
+      convergenceSummary: '自动工具探索未收敛，已中止本次会话。',
+      convergenceWarning: stopReason,
+    );
+    throw Exception(
+      '模型连续调用工具未收敛，已停止自动探索。建议缩小范围，例如指定具体文件、目录或报错信息。当前原因：$stopReason',
+    );
   }
 
   List<Map<String, dynamic>> _buildConversationMessages({
@@ -5453,6 +9639,20 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       ..writeln('所有文件路径都使用相对项目根目录路径。')
       ..writeln('当前推理强度设置: ${_reasoningEffortLabel(reasoningEffort)}。')
       ..writeln('完成工具调用后，再给出最终说明。');
+
+    buffer
+      ..writeln(
+        'Before large tool sequences, prefer a short natural-language progress note.',
+      )
+      ..writeln(
+        'For project exploration, prefer list_dir, grep_code, and read_file_part before reading entire large files.',
+      )
+      ..writeln(
+        'Use replace_in_file for targeted edits and run_command for verification inside the mirrored Android runtime workspace.',
+      )
+      ..writeln(
+        'You can also use find_files, file_exists, copy_file, move_file, apply_patch, git_status, git_diff, git_log, git_show, shell_session_*, and android_* tools when they are a better fit.',
+      );
 
     if (_projectRootPath != null) {
       buffer.writeln('项目根目录: $_projectRootPath');
@@ -5647,6 +9847,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       if (decoded is! Map<String, dynamic>) {
         throw Exception('响应格式异常: 非 JSON 对象');
       }
+      if (decoded.containsKey('output')) {
+        return _parseResponsesApiResult(decoded, payload: payload);
+      }
       final choices = decoded['choices'];
       if (choices is! List || choices.isEmpty) {
         throw Exception('响应缺少 choices');
@@ -5662,7 +9865,15 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
 
       final content = _extractAssistantText(message['content']);
       final toolCalls = _extractToolCalls(message['tool_calls']);
-      return _ChatCompletionResult(content: content, toolCalls: toolCalls);
+      return _ChatCompletionResult(
+        content: content,
+        toolCalls: toolCalls,
+        metadata: _buildResponseMetadataFromUsage(
+          model: '${decoded['model'] ?? payload['model'] ?? ''}',
+          finishReason: '${first['finish_reason'] ?? ''}'.trim(),
+          usage: decoded['usage'],
+        ),
+      );
     } catch (error) {
       if (_stopReplyRequested) {
         throw const _ModelRequestCancelledException();
@@ -5702,6 +9913,115 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     return content.toString();
   }
 
+  _ChatCompletionResult _parseResponsesApiResult(
+    Map<String, dynamic> decoded, {
+    required Map<String, dynamic> payload,
+  }) {
+    final output = decoded['output'];
+    final toolCalls = <_ToolCall>[];
+    final contentBlocks = <String>[];
+    final reasoningBlocks = <String>[];
+
+    if (output is List) {
+      for (var i = 0; i < output.length; i++) {
+        final item = output[i];
+        if (item is! Map) continue;
+        final type = '${item['type'] ?? ''}'.trim();
+        if (type == 'message') {
+          contentBlocks.add(_extractAssistantText(item['content']));
+          continue;
+        }
+        if (type == 'reasoning') {
+          final summary = item['summary'];
+          if (summary is List) {
+            for (final entry in summary) {
+              if (entry is Map) {
+                final text = '${entry['text'] ?? ''}'.trim();
+                if (text.isNotEmpty) {
+                  reasoningBlocks.add(text);
+                }
+              }
+            }
+          }
+          final text = '${item['text'] ?? ''}'.trim();
+          if (text.isNotEmpty) {
+            reasoningBlocks.add(text);
+          }
+          continue;
+        }
+        if (type == 'function_call') {
+          final name = '${item['name'] ?? ''}'.trim();
+          if (name.isEmpty) continue;
+          final argsText = '${item['arguments'] ?? '{}'}';
+          final idRaw = '${item['call_id'] ?? item['id'] ?? ''}'.trim();
+          toolCalls.add(
+            _ToolCall(
+              id: idRaw.isEmpty
+                  ? 'call_${DateTime.now().microsecondsSinceEpoch}_$i'
+                  : idRaw,
+              name: name,
+              argumentsJson: argsText,
+            ),
+          );
+        }
+      }
+    }
+
+    return _ChatCompletionResult(
+      content: contentBlocks
+          .where((item) => item.trim().isNotEmpty)
+          .join('\n\n')
+          .trim(),
+      toolCalls: toolCalls,
+      reasoningSummary: reasoningBlocks.join('\n').trim(),
+      metadata: _buildResponseMetadataFromUsage(
+        model: '${decoded['model'] ?? payload['model'] ?? ''}',
+        finishReason: '${decoded['status'] ?? ''}'.trim(),
+        usage: decoded['usage'],
+      ),
+    );
+  }
+
+  ResponseMetadata _buildResponseMetadataFromUsage({
+    required String model,
+    required String finishReason,
+    required dynamic usage,
+  }) {
+    int? readNestedInt(dynamic source, List<String> path) {
+      dynamic current = source;
+      for (final key in path) {
+        if (current is Map) {
+          current = current[key];
+        } else {
+          return null;
+        }
+      }
+      if (current is int) return current;
+      if (current is num) return current.toInt();
+      return int.tryParse('${current ?? ''}');
+    }
+
+    return ResponseMetadata(
+      model: model,
+      inputTokens:
+          readNestedInt(usage, const ['prompt_tokens']) ??
+          readNestedInt(usage, const ['input_tokens']),
+      outputTokens:
+          readNestedInt(usage, const ['completion_tokens']) ??
+          readNestedInt(usage, const ['output_tokens']),
+      reasoningTokens:
+          readNestedInt(usage, const [
+            'completion_tokens_details',
+            'reasoning_tokens',
+          ]) ??
+          readNestedInt(usage, const [
+            'output_tokens_details',
+            'reasoning_tokens',
+          ]),
+      finishReason: finishReason,
+    );
+  }
+
   List<_ToolCall> _extractToolCalls(dynamic raw) {
     if (raw is! List) return const [];
     final calls = <_ToolCall>[];
@@ -5729,11 +10049,43 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       tools.addAll(_buildFsTools());
     } else {
       tools.addAll(_buildWebTools());
+      if (Platform.isAndroid && _localRuntimeStatus.supported) {
+        tools.addAll(_buildAndroidRuntimeTools());
+      }
     }
     if (_godotMcpReady) {
       tools.addAll(_buildGodotMcpTools());
     }
     return tools;
+  }
+
+  List<Map<String, dynamic>> _buildAndroidRuntimeTools() {
+    const allowedNames = <String>{
+      'run_command',
+      'android_gradle_build',
+      'android_install_apk',
+      'android_logcat',
+      'android_decompile_apk',
+      'android_run_jadx',
+      'android_search_jadx',
+      'android_rebuild_apk',
+      'android_sign_apk',
+      'git_status',
+      'git_diff',
+      'git_log',
+      'git_show',
+      'shell_session_start',
+      'shell_session_stop',
+      'shell_session_snapshot',
+      'shell_session_input',
+      'shell_session_clear',
+    };
+    return _buildFsTools().where((tool) {
+      final function = tool['function'];
+      if (function is! Map) return false;
+      final name = function['name']?.toString() ?? '';
+      return allowedNames.contains(name);
+    }).toList();
   }
 
   List<Map<String, dynamic>> _buildFsTools() {
@@ -5755,6 +10107,79 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       {
         'type': 'function',
         'function': {
+          'name': 'read_file_part',
+          'description':
+              'Read only part of a text file by line range for faster code inspection.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'path': {'type': 'string', 'description': 'Relative file path'},
+              'start_line': {
+                'type': 'integer',
+                'description': '1-based starting line number',
+                'default': 1,
+              },
+              'max_lines': {
+                'type': 'integer',
+                'description': 'Maximum number of lines to read',
+                'default': 160,
+              },
+            },
+            'required': ['path'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'find_files',
+          'description':
+              'Find files or directories by glob pattern relative to the project root or a subdirectory.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'pattern': {
+                'type': 'string',
+                'description': 'Glob pattern such as **/*.dart or *.md',
+              },
+              'path': {
+                'type': 'string',
+                'description': 'Relative directory path to search in',
+                'default': '.',
+              },
+              'limit': {
+                'type': 'integer',
+                'description': 'Maximum number of matches to return',
+                'default': 80,
+              },
+              'case_sensitive': {
+                'type': 'boolean',
+                'description': 'Whether matching should be case-sensitive',
+                'default': false,
+              },
+            },
+            'required': ['pattern'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'file_exists',
+          'description':
+              'Check whether a project file or directory exists and return its type.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'path': {'type': 'string', 'description': 'Relative path'},
+            },
+            'required': ['path'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
           'name': 'write_file',
           'description': 'Write text content to an existing file or create it.',
           'parameters': {
@@ -5764,6 +10189,31 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
               'content': {'type': 'string', 'description': 'File content'},
             },
             'required': ['path', 'content'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'replace_in_file',
+          'description':
+              'Replace text inside an existing text file without rewriting the entire file manually.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'path': {'type': 'string', 'description': 'Relative file path'},
+              'old_text': {
+                'type': 'string',
+                'description': 'The text to replace',
+              },
+              'new_text': {'type': 'string', 'description': 'Replacement text'},
+              'replace_all': {
+                'type': 'boolean',
+                'description': 'Replace all matches instead of only the first',
+                'default': false,
+              },
+            },
+            'required': ['path', 'old_text', 'new_text'],
           },
         },
       },
@@ -5820,6 +10270,70 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       {
         'type': 'function',
         'function': {
+          'name': 'copy_file',
+          'description':
+              'Copy a file or directory to another relative project path.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'from_path': {'type': 'string', 'description': 'Source path'},
+              'to_path': {'type': 'string', 'description': 'Destination path'},
+            },
+            'required': ['from_path', 'to_path'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'move_file',
+          'description':
+              'Move or rename a file or directory to another relative project path.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'from_path': {'type': 'string', 'description': 'Source path'},
+              'to_path': {'type': 'string', 'description': 'Destination path'},
+            },
+            'required': ['from_path', 'to_path'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'apply_patch',
+          'description':
+              'Apply a structured multi-step patch with write, replace, create_dir, delete, move, or copy operations.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'operations': {
+                'type': 'array',
+                'description': 'Ordered patch operations to apply',
+                'items': {
+                  'type': 'object',
+                  'properties': {
+                    'type': {'type': 'string'},
+                    'path': {'type': 'string'},
+                    'content': {'type': 'string'},
+                    'old_text': {'type': 'string'},
+                    'new_text': {'type': 'string'},
+                    'replace_all': {'type': 'boolean'},
+                    'from_path': {'type': 'string'},
+                    'to_path': {'type': 'string'},
+                  },
+                  'required': ['type'],
+                },
+              },
+            },
+            'required': ['operations'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
           'name': 'list_files',
           'description': 'List project files for code navigation.',
           'parameters': {
@@ -5838,6 +10352,75 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       {
         'type': 'function',
         'function': {
+          'name': 'list_dir',
+          'description':
+              'List files and directories inside a relative directory path.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'path': {
+                'type': 'string',
+                'description': 'Relative directory path',
+                'default': '.',
+              },
+              'limit': {
+                'type': 'integer',
+                'description': 'Maximum number of entries to return',
+                'default': 120,
+              },
+            },
+            'required': [],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'file_info',
+          'description':
+              'Return metadata about a project file or directory path.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'path': {'type': 'string', 'description': 'Relative path'},
+            },
+            'required': ['path'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'grep_code',
+          'description':
+              'Search for text in project files and return matching lines.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'query': {'type': 'string', 'description': 'Text to search for'},
+              'path': {
+                'type': 'string',
+                'description': 'Relative directory path to search in',
+                'default': '.',
+              },
+              'limit': {
+                'type': 'integer',
+                'description': 'Maximum number of matches to return',
+                'default': 40,
+              },
+              'case_sensitive': {
+                'type': 'boolean',
+                'description': 'Use case-sensitive matching',
+                'default': false,
+              },
+            },
+            'required': ['query'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
           'name': 'create_project',
           'description':
               'Create a project subdirectory under root and initialize README.',
@@ -5849,6 +10432,465 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             },
             'required': ['name'],
           },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'run_command',
+          'description':
+              'Execute a one-shot shell command inside the mirrored Android local runtime workspace for checks, tests, and builds.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'command': {'type': 'string', 'description': 'Shell command'},
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 20000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture from stdout or stderr',
+                'default': 131072,
+              },
+            },
+            'required': ['command'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'android_gradle_build',
+          'description':
+              'Build the current Android project with Gradle inside the mirrored workspace.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'task': {
+                'type': 'string',
+                'description': 'Gradle task, for example assembleDebug',
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 120000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 262144,
+              },
+            },
+            'required': ['task'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'android_install_apk',
+          'description':
+              'Install an APK with adb. The path can be absolute or relative to the mirrored workspace.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'apk_path': {
+                'type': 'string',
+                'description': 'APK path to install',
+              },
+              'replace': {
+                'type': 'boolean',
+                'description': 'Replace existing app if already installed',
+                'default': true,
+              },
+              'grant_all': {
+                'type': 'boolean',
+                'description': 'Grant all runtime permissions on install',
+                'default': false,
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 60000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 196608,
+              },
+            },
+            'required': ['apk_path'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'android_logcat',
+          'description': 'Capture logcat output through adb.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'filter_spec': {
+                'type': 'string',
+                'description':
+                    'Optional logcat filter spec, for example MyApp:D *:S',
+                'default': '',
+              },
+              'clear_before': {
+                'type': 'boolean',
+                'description': 'Clear logcat buffer before dumping',
+                'default': false,
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 20000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 262144,
+              },
+            },
+            'required': [],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'android_decompile_apk',
+          'description':
+              'Decode an APK with apktool into the runtime reverse workspace.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'apk_path': {
+                'type': 'string',
+                'description': 'APK path to decode',
+              },
+              'reverse_label': {
+                'type': 'string',
+                'description': 'Workspace label under reverse/',
+                'default': '',
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 120000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 262144,
+              },
+            },
+            'required': ['apk_path'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'android_run_jadx',
+          'description':
+              'Run jadx on an APK and write Java sources into the runtime reverse workspace.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'apk_path': {
+                'type': 'string',
+                'description': 'APK path to decompile with jadx',
+              },
+              'reverse_label': {
+                'type': 'string',
+                'description': 'Workspace label under reverse/',
+                'default': '',
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 120000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 262144,
+              },
+            },
+            'required': ['apk_path'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'android_search_jadx',
+          'description':
+              'Search the generated jadx output directory inside the reverse workspace.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'query': {'type': 'string', 'description': 'Search string'},
+              'reverse_label': {
+                'type': 'string',
+                'description': 'Workspace label under reverse/',
+                'default': '',
+              },
+              'case_sensitive': {
+                'type': 'boolean',
+                'description': 'Use case-sensitive search',
+                'default': false,
+              },
+              'max_results': {
+                'type': 'integer',
+                'description': 'Maximum number of matches',
+                'default': 40,
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 20000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 196608,
+              },
+            },
+            'required': ['query'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'android_rebuild_apk',
+          'description':
+              'Rebuild an apktool reverse workspace into an unsigned APK.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'reverse_label': {
+                'type': 'string',
+                'description': 'Workspace label under reverse/',
+                'default': '',
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 120000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 262144,
+              },
+            },
+            'required': [],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'android_sign_apk',
+          'description':
+              'Zipalign and sign the rebuilt APK using the configured keystore fields.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'reverse_label': {
+                'type': 'string',
+                'description': 'Workspace label under reverse/',
+                'default': '',
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 120000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 196608,
+              },
+            },
+            'required': [],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'git_status',
+          'description':
+              'Run git status in the mirrored Android runtime workspace.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 20000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 131072,
+              },
+            },
+            'required': [],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'git_diff',
+          'description':
+              'Run git diff in the mirrored Android runtime workspace.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'path': {
+                'type': 'string',
+                'description': 'Optional relative path to limit diff scope',
+                'default': '',
+              },
+              'staged': {
+                'type': 'boolean',
+                'description': 'Whether to diff staged changes',
+                'default': false,
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 20000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 131072,
+              },
+            },
+            'required': [],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'git_log',
+          'description':
+              'Read recent git history in the mirrored Android runtime workspace.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'limit': {
+                'type': 'integer',
+                'description': 'Maximum number of commits to show',
+                'default': 20,
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 20000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 131072,
+              },
+            },
+            'required': [],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'git_show',
+          'description':
+              'Show a specific git ref, commit, or file revision in the mirrored Android runtime workspace.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'ref': {
+                'type': 'string',
+                'description': 'Commit, ref name, or revision to show',
+              },
+              'path': {
+                'type': 'string',
+                'description': 'Optional relative path for a single file view',
+                'default': '',
+              },
+              'timeout_ms': {
+                'type': 'integer',
+                'description': 'Timeout in milliseconds',
+                'default': 20000,
+              },
+              'max_output_bytes': {
+                'type': 'integer',
+                'description': 'Maximum bytes to capture',
+                'default': 131072,
+              },
+            },
+            'required': ['ref'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'shell_session_start',
+          'description':
+              'Start the persistent local shell session in the Android runtime workspace.',
+          'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'shell_session_stop',
+          'description':
+              'Stop the persistent local shell session in the Android runtime workspace.',
+          'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'shell_session_snapshot',
+          'description':
+              'Read the current shell session state and buffered output.',
+          'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'shell_session_input',
+          'description':
+              'Send one command or line of input to the persistent shell session.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'input': {'type': 'string', 'description': 'Shell input text'},
+            },
+            'required': ['input'],
+          },
+        },
+      },
+      {
+        'type': 'function',
+        'function': {
+          'name': 'shell_session_clear',
+          'description': 'Clear the buffered shell session output.',
+          'parameters': {'type': 'object', 'properties': {}, 'required': []},
         },
       },
       {
@@ -6156,6 +11198,265 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       return _executeGodotMcpTool(name, args);
     }
 
+    if (name == 'run_command') {
+      final command = _readArgString(args, 'command');
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 20000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 131072,
+      );
+      final result = await _executePrimaryBackendCommand(
+        command: command,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI executed local command: $command';
+      });
+      return jsonEncode(<String, dynamic>{
+        'ok': result['ok'] == true,
+        'action': 'run_command',
+        ...result,
+      });
+    }
+
+    if (name == 'android_gradle_build') {
+      final task = _readArgString(args, 'task');
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 120000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 262144,
+      );
+      final result = await _runAndroidGradleBuildTool(
+        task: task,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI built Android project: $task';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'android_install_apk') {
+      final apkPath = _readArgString(args, 'apk_path');
+      final replace = _readArgBool(args, 'replace', fallback: true);
+      final grantAll = _readArgBool(args, 'grant_all', fallback: false);
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 60000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 196608,
+      );
+      final result = await _runAndroidInstallApkTool(
+        apkPath: apkPath,
+        replace: replace,
+        grantAll: grantAll,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI installed APK: $apkPath';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'android_logcat') {
+      final filterSpec = _readArgString(args, 'filter_spec', fallback: '');
+      final clearBefore = _readArgBool(args, 'clear_before', fallback: false);
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 20000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 262144,
+      );
+      final result = await _runAndroidLogcatTool(
+        filterSpec: filterSpec,
+        clearBefore: clearBefore,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI captured logcat';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'android_decompile_apk') {
+      final apkPath = _readArgString(args, 'apk_path');
+      final reverseLabel = _readArgString(args, 'reverse_label', fallback: '');
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 120000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 262144,
+      );
+      final result = await _runAndroidApktoolDecodeTool(
+        apkPath: apkPath,
+        reverseLabel: reverseLabel,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI decoded APK: $apkPath';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'android_run_jadx') {
+      final apkPath = _readArgString(args, 'apk_path');
+      final reverseLabel = _readArgString(args, 'reverse_label', fallback: '');
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 120000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 262144,
+      );
+      final result = await _runAndroidJadxTool(
+        apkPath: apkPath,
+        reverseLabel: reverseLabel,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI ran JADX: $apkPath';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'android_search_jadx') {
+      final query = _readArgString(args, 'query');
+      final reverseLabel = _readArgString(args, 'reverse_label', fallback: '');
+      final caseSensitive = _readArgBool(
+        args,
+        'case_sensitive',
+        fallback: false,
+      );
+      final maxResults = _readArgInt(args, 'max_results', fallback: 40);
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 20000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 196608,
+      );
+      final result = await _runAndroidJadxSearchTool(
+        query: query,
+        reverseLabel: reverseLabel,
+        caseSensitive: caseSensitive,
+        maxResults: maxResults,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI searched JADX output: $query';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'android_rebuild_apk') {
+      final reverseLabel = _readArgString(args, 'reverse_label', fallback: '');
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 120000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 262144,
+      );
+      final result = await _runAndroidApktoolBuildTool(
+        reverseLabel: reverseLabel,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI rebuilt reverse APK';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'android_sign_apk') {
+      final reverseLabel = _readArgString(args, 'reverse_label', fallback: '');
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 120000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 196608,
+      );
+      final result = await _runAndroidSignApkTool(
+        reverseLabel: reverseLabel,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI signed rebuilt APK';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'shell_session_start') {
+      await _ensureMirroredWorkspaceIfAvailable();
+      await _startShellSession();
+      await _refreshShellSnapshot(autoScroll: true);
+      return jsonEncode(<String, dynamic>{
+        'ok': true,
+        'action': 'shell_session_start',
+        'is_running': _localShellSnapshot.isRunning,
+        'working_directory': _localShellSnapshot.workingDirectory,
+        'lines': _localShellSnapshot.lines,
+      });
+    }
+
+    if (name == 'shell_session_stop') {
+      await _stopShellSession();
+      await _refreshShellSnapshot(autoScroll: true);
+      return jsonEncode(<String, dynamic>{
+        'ok': true,
+        'action': 'shell_session_stop',
+        'is_running': _localShellSnapshot.isRunning,
+        'working_directory': _localShellSnapshot.workingDirectory,
+        'lines': _localShellSnapshot.lines,
+      });
+    }
+
+    if (name == 'shell_session_snapshot') {
+      await _refreshShellSnapshot();
+      return jsonEncode(<String, dynamic>{
+        'ok': true,
+        'action': 'shell_session_snapshot',
+        'is_running': _localShellSnapshot.isRunning,
+        'working_directory': _localShellSnapshot.workingDirectory,
+        'last_error': _localShellSnapshot.lastError,
+        'lines': _localShellSnapshot.lines,
+      });
+    }
+
+    if (name == 'shell_session_input') {
+      await _ensureMirroredWorkspaceIfAvailable();
+      final input = _readArgString(args, 'input');
+      await _sendShellInput(input);
+      await _refreshShellSnapshot(autoScroll: true);
+      return jsonEncode(<String, dynamic>{
+        'ok': true,
+        'action': 'shell_session_input',
+        'input': input,
+        'is_running': _localShellSnapshot.isRunning,
+        'working_directory': _localShellSnapshot.workingDirectory,
+        'lines': _localShellSnapshot.lines,
+      });
+    }
+
+    if (name == 'shell_session_clear') {
+      await _clearShellBuffer();
+      await _refreshShellSnapshot();
+      return jsonEncode(<String, dynamic>{
+        'ok': true,
+        'action': 'shell_session_clear',
+        'is_running': _localShellSnapshot.isRunning,
+        'working_directory': _localShellSnapshot.workingDirectory,
+        'lines': _localShellSnapshot.lines,
+      });
+    }
+
     if (name == 'download_asset' && !_aiFsGranted) {
       throw Exception('download_asset 需要先在设置中开启 AI 文件夹读写权限');
     }
@@ -6170,6 +11471,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       throw Exception('未选择项目文件夹');
     }
 
+    await _ensureMirroredWorkspaceIfAvailable();
+
     if (name == 'read_file') {
       final path = _readArgString(args, 'path');
       final content = await _readFileText(path);
@@ -6183,6 +11486,60 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         'path': path,
         'content': _truncateModelOutput(content, 12000),
       });
+    }
+
+    if (name == 'read_file_part') {
+      final path = _readArgString(args, 'path');
+      final startLine = _readArgInt(args, 'start_line', fallback: 1);
+      final maxLines = _readArgInt(args, 'max_lines', fallback: 160);
+      final result = await _readFilePart(
+        path,
+        startLine: startLine,
+        maxLines: maxLines,
+      );
+      _filePathController.text = path;
+      _fileContentController.text = _truncateModelOutput(
+        result['content']?.toString() ?? '',
+        12000,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI read file slice: $path';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'find_files') {
+      final pattern = _readArgString(args, 'pattern');
+      final path = _readArgString(args, 'path', fallback: '.');
+      final limit = _readArgInt(
+        args,
+        'limit',
+        fallback: 80,
+      ).clamp(1, 240).toInt();
+      final caseSensitive = _readArgBool(
+        args,
+        'case_sensitive',
+        fallback: false,
+      );
+      final result = await _findProjectFiles(
+        pattern: pattern,
+        relativePath: path,
+        limit: limit,
+        caseSensitive: caseSensitive,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI searched files: $pattern';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'file_exists') {
+      final path = _readArgString(args, 'path');
+      final result = await _readFileExists(path);
+      setState(() {
+        _fileOpsStatus = 'AI checked path existence: $path';
+      });
+      return jsonEncode(result);
     }
 
     if (name == 'write_file') {
@@ -6201,6 +11558,30 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         'action': 'write_file',
         'path': path,
         'bytes': utf8.encode(content).length,
+      });
+    }
+
+    if (name == 'replace_in_file') {
+      final path = _readArgString(args, 'path');
+      final oldText = _readArgString(args, 'old_text');
+      final newText = _readArgString(args, 'new_text', fallback: '');
+      final replaceAll = _readArgBool(args, 'replace_all', fallback: false);
+      await _captureUndoSnapshotIfNeeded(roundDraft, path);
+      final result = await _replaceTextInFile(
+        relativePath: path,
+        oldText: oldText,
+        newText: newText,
+        replaceAll: replaceAll,
+      );
+      await _loadProjectFolder(_projectRootPath!, silent: true);
+      _filePathController.text = path;
+      setState(() {
+        _fileOpsStatus = 'AI replaced text in: $path';
+      });
+      return jsonEncode(<String, dynamic>{
+        'ok': true,
+        'action': 'replace_in_file',
+        ...result,
       });
     }
 
@@ -6242,9 +11623,50 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       return jsonEncode({'ok': true, 'action': 'delete_entry', 'path': path});
     }
 
+    if (name == 'copy_file') {
+      final fromPath = _readArgString(args, 'from_path');
+      final toPath = _readArgString(args, 'to_path');
+      await _captureUndoSnapshotIfNeeded(roundDraft, toPath);
+      final result = await _copyProjectEntry(fromPath, toPath);
+      await _loadProjectFolder(_projectRootPath!, silent: true);
+      _filePathController.text = toPath;
+      setState(() {
+        _fileOpsStatus = 'AI copied entry: $fromPath -> $toPath';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'move_file') {
+      final fromPath = _readArgString(args, 'from_path');
+      final toPath = _readArgString(args, 'to_path');
+      await _captureUndoSnapshotIfNeeded(roundDraft, fromPath);
+      await _captureUndoSnapshotIfNeeded(roundDraft, toPath);
+      final result = await _moveProjectEntry(fromPath, toPath);
+      await _loadProjectFolder(_projectRootPath!, silent: true);
+      _filePathController.text = toPath;
+      setState(() {
+        _fileOpsStatus = 'AI moved entry: $fromPath -> $toPath';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'apply_patch') {
+      final operations = _readArgList(args, 'operations');
+      final result = await _applyStructuredPatch(
+        roundDraft: roundDraft,
+        operations: operations,
+      );
+      await _loadProjectFolder(_projectRootPath!, silent: true);
+      setState(() {
+        _fileOpsStatus = 'AI applied structured patch';
+      });
+      return jsonEncode(result);
+    }
+
     if (name == 'list_files') {
       final limit = _readArgInt(args, 'limit', fallback: 80).clamp(1, 200);
-      final scan = await _scanProjectSnippets(_projectRootPath!);
+      final effectiveRoot = _requireEffectiveProjectAccessRootPath();
+      final scan = await _scanProjectSnippets(effectiveRoot);
       if (scan.readError != null) {
         throw Exception('读取文件索引失败: ${scan.readError}');
       }
@@ -6264,9 +11686,61 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       });
       return jsonEncode({
         'ok': true,
-        'root': _projectRootPath,
+        'root': effectiveRoot,
         'count': _projectFiles.length,
         'files': files,
+      });
+    }
+
+    if (name == 'list_dir') {
+      final path = _readArgString(args, 'path', fallback: '.');
+      final limit = _readArgInt(args, 'limit', fallback: 120).clamp(1, 240);
+      final result = await _listDirectoryEntries(path, limit: limit);
+      setState(() {
+        _fileOpsStatus = 'AI listed directory: $path';
+      });
+      return jsonEncode(<String, dynamic>{
+        'ok': true,
+        'action': 'list_dir',
+        ...result,
+      });
+    }
+
+    if (name == 'file_info') {
+      final path = _readArgString(args, 'path');
+      final result = await _readFileInfo(path);
+      setState(() {
+        _fileOpsStatus = 'AI inspected path: $path';
+      });
+      return jsonEncode(<String, dynamic>{
+        'ok': true,
+        'action': 'file_info',
+        ...result,
+      });
+    }
+
+    if (name == 'grep_code') {
+      final query = _readArgString(args, 'query');
+      final path = _readArgString(args, 'path', fallback: '.');
+      final limit = _readArgInt(args, 'limit', fallback: 40).clamp(1, 120);
+      final caseSensitive = _readArgBool(
+        args,
+        'case_sensitive',
+        fallback: false,
+      );
+      final result = await _grepProjectCode(
+        query: query,
+        relativePath: path,
+        limit: limit,
+        caseSensitive: caseSensitive,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI searched code for: $query';
+      });
+      return jsonEncode(<String, dynamic>{
+        'ok': true,
+        'action': 'grep_code',
+        ...result,
       });
     }
 
@@ -6291,6 +11765,84 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         'project_path': normalized,
         'readme': '$normalized/README.md',
       });
+    }
+
+    if (name == 'git_status') {
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 20000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 131072,
+      );
+      final result = await _runGitStatusTool(
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI ran git status';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'git_diff') {
+      final path = _readArgString(args, 'path', fallback: '');
+      final staged = _readArgBool(args, 'staged', fallback: false);
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 20000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 131072,
+      );
+      final result = await _runGitDiffTool(
+        path: path,
+        staged: staged,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI ran git diff';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'git_log') {
+      final limit = _readArgInt(args, 'limit', fallback: 20);
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 20000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 131072,
+      );
+      final result = await _runGitLogTool(
+        limit: limit,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI ran git log';
+      });
+      return jsonEncode(result);
+    }
+
+    if (name == 'git_show') {
+      final ref = _readArgString(args, 'ref');
+      final path = _readArgString(args, 'path', fallback: '');
+      final timeoutMs = _readArgInt(args, 'timeout_ms', fallback: 20000);
+      final maxOutputBytes = _readArgInt(
+        args,
+        'max_output_bytes',
+        fallback: 131072,
+      );
+      final result = await _runGitShowTool(
+        ref: ref,
+        path: path,
+        timeoutMs: timeoutMs,
+        maxOutputBytes: maxOutputBytes,
+      );
+      setState(() {
+        _fileOpsStatus = 'AI ran git show';
+      });
+      return jsonEncode(result);
     }
 
     if (name == 'download_asset') {
@@ -6525,6 +12077,14 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     if (text == 'true' || text == '1' || text == 'yes') return true;
     if (text == 'false' || text == '0' || text == 'no') return false;
     return fallback;
+  }
+
+  List<dynamic> _readArgList(Map<String, dynamic> args, String key) {
+    final value = args[key];
+    if (value is List) {
+      return value;
+    }
+    throw Exception('Tool argument must be an array: $key');
   }
 
   Future<List<Map<String, dynamic>>> _searchWeb({
@@ -7370,6 +12930,10 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       case 'web_search':
       case 'fetch_webpage':
       case 'list_files':
+      case 'list_dir':
+      case 'file_info':
+      case 'find_files':
+      case 'file_exists':
       case 'godot_get_version':
       case 'godot_list_projects':
       case 'godot_get_project_info':
@@ -8161,25 +13725,571 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       drawer: _buildConversationDrawer(),
       endDrawerEnableOpenDragGesture: true,
       endDrawer: _buildSettingsDrawer(),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedTabIndex,
+        onDestinationSelected: (index) {
+          setState(() {
+            _selectedTabIndex = index;
+          });
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.chat_bubble_outline_rounded),
+            selectedIcon: Icon(Icons.chat_bubble_rounded),
+            label: '聊天',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.folder_copy_outlined),
+            selectedIcon: Icon(Icons.folder_copy_rounded),
+            label: '工作区',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.android_outlined),
+            selectedIcon: Icon(Icons.android_rounded),
+            label: '安卓工具',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.terminal_outlined),
+            selectedIcon: Icon(Icons.terminal_rounded),
+            label: '终端',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.tune_outlined),
+            selectedIcon: Icon(Icons.tune_rounded),
+            label: '设置',
+          ),
+        ],
+      ),
       body: Stack(
         children: [
           const _WorkbenchBackground(),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-              child: Column(
-                children: [
-                  _buildTopBar(),
-                  const SizedBox(height: 10),
-                  if (_projectRootPath != null) _buildProjectHint(),
-                  Expanded(child: _buildChatPanel()),
-                  const SizedBox(height: 10),
-                  _buildComposer(),
-                ],
+          SafeArea(child: _buildActiveTabBody()),
+          _buildTerminalPanel(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActiveTabBody() {
+    switch (_selectedTabIndex) {
+      case 1:
+        return _buildWorkspaceTab();
+      case 2:
+        return _buildAndroidToolsTab();
+      case 3:
+        return _buildTerminalTab();
+      case 4:
+        return _buildSettingsTab();
+      case 0:
+      default:
+        return _buildChatHomeTab();
+    }
+  }
+
+  Widget _buildChatHomeTab() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      child: Column(
+        children: [
+          _buildTopBar(),
+          const SizedBox(height: 10),
+          Expanded(child: _buildChatPanel()),
+          const SizedBox(height: 10),
+          _buildComposer(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWorkspaceTab() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: Column(
+        children: [
+          _buildPageHeader(title: '工作区', subtitle: '浏览项目、查看差异、同步镜像和源目录。'),
+          const SizedBox(height: 10),
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.zero,
+              children: [
+                _buildProjectSection(),
+                const SizedBox(height: 12),
+                _buildRuntimeWorkbenchSection(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAndroidToolsTab() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: Column(
+        children: [
+          _buildPageHeader(title: '安卓工具', subtitle: '构建、安装、日志、反编译和执行后端都集中在这里。'),
+          const SizedBox(height: 10),
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.zero,
+              children: [
+                _buildExecutionBackendsSection(),
+                const SizedBox(height: 12),
+                _buildAndroidToolkitSection(),
+                const SizedBox(height: 12),
+                _buildAgentExecutionSection(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTerminalTab() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: Column(
+        children: [
+          _buildPageHeader(
+            title: '终端',
+            subtitle: '查看本地 Shell 日志，并在手机上做轻量手动干预。',
+          ),
+          const SizedBox(height: 10),
+          Expanded(
+            child: Column(
+              children: [
+                Expanded(child: _buildTerminalWorkbenchCard()),
+                const SizedBox(height: 12),
+                _buildBackgroundGuardSection(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingsTab() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: Column(
+        children: [
+          _buildPageHeader(title: '设置', subtitle: '模型连接、本地运行时、权限和高级能力。'),
+          const SizedBox(height: 10),
+          Expanded(child: _buildSettingsBody()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPageHeader({required String title, required String subtitle}) {
+    return _GlassCard(
+      radius: 24,
+      padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              color: const Color(0x100B6E4F),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: IconButton(
+              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+              icon: const Icon(Icons.menu_rounded, color: AppPalette.ink),
+              tooltip: '会话列表',
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    color: AppPalette.ink,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppPalette.muted,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+            icon: const Icon(Icons.tune_rounded, color: AppPalette.ink),
+            tooltip: '设置',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSessionOverviewCard() {
+    final hasProject = _projectRootPath?.trim().isNotEmpty ?? false;
+    final currentModel = _activeProviderConfig.model.trim();
+    final modelLabel = currentModel.isEmpty ? '未选模型' : currentModel;
+    final runtimeLabel = _localRuntimeStatus.isRunning ? '运行中' : '未启动';
+    final mirrorLabel = _localRuntimeStatus.hasWorkspace ? '已镜像' : '未镜像';
+    final backendLabel = _primaryBackendLabel(_primaryExecutionBackend);
+    return _GlassCard(
+      radius: 22,
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '开发会话',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: AppPalette.ink,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            hasProject
+                ? '当前项目：${_drawerExplorerProjectName()}'
+                : '还没有绑定项目目录，建议先选择项目后再发起开发任务。',
+            style: const TextStyle(
+              fontSize: 12,
+              color: AppPalette.muted,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _AgentMetricChip(
+                label:
+                    '项目 ${hasProject ? _drawerExplorerProjectName() : '未选择'}',
+              ),
+              _AgentMetricChip(label: '运行时 $runtimeLabel'),
+              _AgentMetricChip(label: '镜像 $mirrorLabel'),
+              _AgentMetricChip(label: '后端 $backendLabel'),
+              _AgentMetricChip(
+                label: '模型 ${_singleLinePreview(modelLabel, maxLength: 18)}',
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: hasProject
+                    ? () {
+                        setState(() {
+                          _selectedTabIndex = 1;
+                        });
+                      }
+                    : _pickProjectFolder,
+                icon: Icon(
+                  hasProject
+                      ? Icons.folder_copy_rounded
+                      : Icons.folder_open_rounded,
+                ),
+                label: Text(hasProject ? '打开工作区' : '选择项目'),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: () {
+                  setState(() {
+                    _selectedTabIndex = 2;
+                  });
+                },
+                icon: const Icon(Icons.android_rounded),
+                label: const Text('安卓工具'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _localRuntimeStatus.isRunning
+                    ? _prepareLocalWorkspaceMirror
+                    : _startLocalRuntime,
+                icon: Icon(
+                  _localRuntimeStatus.isRunning
+                      ? Icons.copy_all_rounded
+                      : Icons.play_arrow_rounded,
+                ),
+                label: Text(_localRuntimeStatus.isRunning ? '准备镜像' : '启动运行时'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuickTaskPanel() {
+    return _GlassCard(
+      radius: 22,
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '快捷任务',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: AppPalette.ink,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildQuickPromptChip(
+                '修复构建失败',
+                '请先运行 Gradle 构建，定位当前 Android 项目的报错，修改代码并给我 diff 与原因。',
+              ),
+              _buildQuickPromptChip(
+                '修改页面',
+                '请先阅读相关页面文件，理解当前布局，再帮我修改页面并说明影响范围。',
+              ),
+              _buildQuickPromptChip(
+                '新增功能',
+                '请先分析项目结构和现有模式，再为我实现这个新功能，并给出验证步骤。',
+              ),
+              _buildQuickPromptChip(
+                '分析 APK',
+                '请帮我分析 APK，必要时使用 apktool 或 JADX，并总结关键入口与核心逻辑。',
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: _projectRootPath == null
+                    ? null
+                    : () {
+                        setState(() {
+                          _selectedTabIndex = 2;
+                        });
+                        unawaited(
+                          _runAndroidToolkitAction(
+                            title: 'Gradle 构建',
+                            action: () => _runAndroidGradleBuildTool(),
+                          ),
+                        );
+                      },
+                icon: const Icon(Icons.build_circle_rounded),
+                label: const Text('构建'),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: _projectRootPath == null
+                    ? null
+                    : () {
+                        setState(() {
+                          _selectedTabIndex = 1;
+                        });
+                        unawaited(
+                          _runRuntimeWorkbenchCommand(
+                            title: 'Git 差异',
+                            action: () =>
+                                _runGitDiffTool(maxOutputBytes: 196608),
+                          ),
+                        );
+                      },
+                icon: const Icon(Icons.difference_rounded),
+                label: const Text('查看 Diff'),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: () {
+                  setState(() {
+                    _selectedTabIndex = 2;
+                  });
+                  unawaited(
+                    _runAndroidToolkitAction(
+                      title: 'Logcat 日志',
+                      action: () => _runAndroidLogcatTool(),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.article_outlined),
+                label: const Text('抓日志'),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: _localRuntimeStatus.hasWorkspace
+                    ? () {
+                        setState(() {
+                          _selectedTabIndex = 1;
+                        });
+                        unawaited(_syncMirrorWorkspaceBackToSource());
+                      }
+                    : null,
+                icon: const Icon(Icons.sync_alt_rounded),
+                label: const Text('同步回源'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuickPromptChip(String label, String prompt) {
+    return ActionChip(
+      label: Text(label),
+      onPressed: () => _applyPromptTemplate(prompt),
+      avatar: const Icon(
+        Icons.bolt_rounded,
+        size: 16,
+        color: AppPalette.primary,
+      ),
+      side: const BorderSide(color: AppPalette.border),
+      backgroundColor: Colors.white.withValues(alpha: 0.72),
+      labelStyle: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+        color: AppPalette.ink,
+      ),
+    );
+  }
+
+  void _applyPromptTemplate(String prompt) {
+    _promptController.text = prompt;
+    _promptController.selection = TextSelection.collapsed(
+      offset: _promptController.text.length,
+    );
+    _promptFocusNode.requestFocus();
+  }
+
+  Widget _buildTerminalWorkbenchCard() {
+    return _PanelCard(
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '终端控制台',
+                  style: TextStyle(
+                    color: AppPalette.ink,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              Text(
+                _localShellSnapshot.isRunning ? 'shell on' : 'shell off',
+                style: const TextStyle(
+                  color: AppPalette.primary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: () {
+                  setState(
+                    () => _terminalLogs
+                      ..clear()
+                      ..add('Astra Terminal ready.'),
+                  );
+                  _persistState();
+                },
+                child: const Text('清空'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0A1220).withValues(alpha: 0.97),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF203048)),
+              ),
+              child: ListView.builder(
+                controller: _terminalScroll,
+                itemCount: _terminalLogs.length,
+                itemBuilder: (context, index) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      _terminalLogs[index],
+                      style: const TextStyle(
+                        fontFamily: 'JetBrainsMono',
+                        fontSize: 12,
+                        color: Color(0xFFBAD0EB),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           ),
-          _buildTerminalPanel(),
+          const SizedBox(height: 10),
+          Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFF111B2D),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFF203048)),
+            ),
+            child: Row(
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 10),
+                  child: Text(
+                    r'$',
+                    style: TextStyle(
+                      color: Color(0xFF7AD7A0),
+                      fontFamily: 'JetBrainsMono',
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: _terminalController,
+                    onSubmitted: (_) => _runTerminalCommand(),
+                    style: const TextStyle(
+                      color: Color(0xFFE2EEFF),
+                      fontFamily: 'JetBrainsMono',
+                      fontSize: 12,
+                    ),
+                    decoration: const InputDecoration(
+                      border: InputBorder.none,
+                      hintText: '输入命令',
+                      hintStyle: TextStyle(
+                        color: Color(0xFF7088A4),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: _runTerminalCommand,
+                  icon: const Icon(
+                    Icons.play_arrow_rounded,
+                    color: Color(0xFF7AD7A0),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -8301,254 +14411,366 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     );
   }
 
+  Widget _buildAgentExecutionBanner() {
+    final hasContent =
+        _sendingPrompt ||
+        _agentPlanSummary.isNotEmpty ||
+        _agentProgressEntries.isNotEmpty ||
+        _agentToolEvents.isNotEmpty;
+    if (!hasContent) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F9FF),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFD9E6F5)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _sendingPrompt
+                        ? const Color(0xFF0B6E4F)
+                        : const Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _agentLiveStatus,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppPalette.ink,
+                    ),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+                  icon: const Icon(Icons.insights_rounded, size: 16),
+                  label: const Text('执行台'),
+                ),
+              ],
+            ),
+            if (_agentPlanSummary.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                _agentPlanSummary,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppPalette.muted,
+                  height: 1.35,
+                ),
+              ),
+            ],
+            if (_agentToolEvents.isNotEmpty || _agentCurrentRound > 0) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _AgentMetricChip(label: '步骤 ${_agentProgressEntries.length}'),
+                  _AgentMetricChip(label: '工具 ${_agentToolEvents.length}'),
+                ],
+              ),
+            ],
+            if (_agentCurrentRound > 0) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _AgentMetricChip(label: '阶段 $_agentExecutionPhase'),
+                  if (_agentMaxRounds > 0)
+                    _AgentMetricChip(
+                      label: '回合 $_agentCurrentRound / $_agentMaxRounds',
+                    ),
+                  if (_agentSummaryMode) const _AgentMetricChip(label: '总结模式'),
+                ],
+              ),
+            ],
+            if (_agentConvergenceSummary.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                _agentConvergenceSummary,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppPalette.muted,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildChatPanel() {
     return _GlassCard(
       radius: 26,
       padding: const EdgeInsets.fromLTRB(10, 12, 10, 10),
-      child: Column(
-        children: [
-          Expanded(
-            child: ListView.builder(
-              controller: _chatScroll,
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final message = _messages[index];
-                final isUser = message.role == ChatRole.user;
-                final isSystem = message.role == ChatRole.system;
-                final canRollbackHere = isUser
-                    ? _canRollbackFromUserMessage(index)
-                    : false;
-                final isRollbackTarget =
-                    _rollingBackRound && _rollingBackMessageIndex == index;
-                final isEditingMessage =
-                    !isSystem && _editingMessageIndex == index;
-                final background = isUser
-                    ? const Color(0x1A0B6E4F)
-                    : isSystem
-                    ? const Color(0x1A334155)
-                    : Colors.white.withValues(alpha: 0.78);
+      child: ListView.builder(
+        controller: _chatScroll,
+        padding: EdgeInsets.zero,
+        itemCount: _messages.length,
+        itemBuilder: (context, index) {
+          final message = _messages[index];
+          if (_isToolLogMessage(message)) {
+            return const SizedBox.shrink();
+          }
+          final isUser = message.role == ChatRole.user;
+          final isSystem = message.role == ChatRole.system;
+          final canRollbackHere = isUser
+              ? _canRollbackFromUserMessage(index)
+              : false;
+          final isRollbackTarget =
+              _rollingBackRound && _rollingBackMessageIndex == index;
+          final isEditingMessage = !isSystem && _editingMessageIndex == index;
+          final background = isUser
+              ? const Color(0x1A0B6E4F)
+              : isSystem
+              ? const Color(0x1A334155)
+              : Colors.white.withValues(alpha: 0.78);
 
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Row(
-                    mainAxisAlignment: isUser
-                        ? MainAxisAlignment.end
-                        : MainAxisAlignment.start,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (!isUser)
-                        Container(
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              mainAxisAlignment: isUser
+                  ? MainAxisAlignment.end
+                  : MainAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (!isUser)
+                  Container(
+                    width: 28,
+                    height: 28,
+                    margin: const EdgeInsets.only(right: 8),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isSystem
+                          ? const Color(0x1A334155)
+                          : const Color(0x220B6E4F),
+                    ),
+                    child: Icon(
+                      isSystem
+                          ? Icons.info_outline_rounded
+                          : Icons.smart_toy_rounded,
+                      size: 16,
+                      color: isSystem
+                          ? const Color(0xFF334155)
+                          : AppPalette.primary,
+                    ),
+                  ),
+                if (isUser)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8, top: 2),
+                    child: Tooltip(
+                      message: '回退这条消息',
+                      child: InkWell(
+                        onTap: !canRollbackHere || _rollingBackRound
+                            ? null
+                            : () => _rollbackFromUserMessage(index),
+                        borderRadius: BorderRadius.circular(999),
+                        child: Ink(
                           width: 28,
                           height: 28,
-                          margin: const EdgeInsets.only(right: 8),
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: isSystem
+                            color: canRollbackHere
                                 ? const Color(0x1A334155)
-                                : const Color(0x220B6E4F),
-                          ),
-                          child: Icon(
-                            isSystem
-                                ? Icons.info_outline_rounded
-                                : Icons.smart_toy_rounded,
-                            size: 16,
-                            color: isSystem
-                                ? const Color(0xFF334155)
-                                : AppPalette.primary,
-                          ),
-                        ),
-                      if (isUser)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8, top: 2),
-                          child: Tooltip(
-                            message: '回退这条消息',
-                            child: InkWell(
-                              onTap: !canRollbackHere || _rollingBackRound
-                                  ? null
-                                  : () => _rollbackFromUserMessage(index),
-                              borderRadius: BorderRadius.circular(999),
-                              child: Ink(
-                                width: 28,
-                                height: 28,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: canRollbackHere
-                                      ? const Color(0x1A334155)
-                                      : const Color(0x11334155),
-                                  border: Border.all(
-                                    color: canRollbackHere
-                                        ? AppPalette.border
-                                        : AppPalette.border.withValues(
-                                            alpha: 0.55,
-                                          ),
-                                  ),
-                                ),
-                                child: Center(
-                                  child: isRollbackTarget
-                                      ? const SizedBox(
-                                          width: 14,
-                                          height: 14,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        )
-                                      : Icon(
-                                          Icons.undo_rounded,
-                                          size: 16,
-                                          color: canRollbackHere
-                                              ? AppPalette.muted
-                                              : AppPalette.muted.withValues(
-                                                  alpha: 0.45,
-                                                ),
-                                        ),
-                                ),
-                              ),
+                                : const Color(0x11334155),
+                            border: Border.all(
+                              color: canRollbackHere
+                                  ? AppPalette.border
+                                  : AppPalette.border.withValues(alpha: 0.55),
                             ),
                           ),
-                        ),
-                      Flexible(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: background,
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: AppPalette.border),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              if (isEditingMessage)
-                                TextField(
-                                  controller: _messageEditController,
-                                  autofocus: true,
-                                  minLines: 2,
-                                  maxLines: 8,
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    color: AppPalette.ink,
-                                    height: 1.45,
-                                  ),
-                                  decoration: InputDecoration(
-                                    isDense: true,
-                                    filled: true,
-                                    fillColor: Colors.white.withValues(
-                                      alpha: 0.88,
+                          child: Center(
+                            child: isRollbackTarget
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
                                     ),
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 8,
-                                    ),
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                      borderSide: BorderSide(
-                                        color: AppPalette.border,
-                                      ),
-                                    ),
-                                    enabledBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                      borderSide: BorderSide(
-                                        color: AppPalette.border,
-                                      ),
-                                    ),
-                                    focusedBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                      borderSide: const BorderSide(
-                                        color: AppPalette.primary,
-                                      ),
-                                    ),
-                                  ),
-                                )
-                              else
-                                Text(
-                                  message.text,
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    color: AppPalette.ink,
-                                    height: 1.45,
-                                  ),
-                                ),
-                              const SizedBox(height: 5),
-                              Text(
-                                message.time,
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: AppPalette.muted,
-                                ),
-                              ),
-                              if (!isSystem) ...[
-                                const SizedBox(height: 6),
-                                if (isEditingMessage)
-                                  Wrap(
-                                    spacing: 6,
-                                    runSpacing: 6,
-                                    children: [
-                                      _buildMessageActionButton(
-                                        icon: Icons.check_rounded,
-                                        label: '保存',
-                                        onPressed: () =>
-                                            _saveInlineMessageEdit(index),
-                                      ),
-                                      _buildMessageActionButton(
-                                        icon: Icons.close_rounded,
-                                        label: '取消',
-                                        onPressed: _cancelInlineMessageEdit,
-                                      ),
-                                    ],
                                   )
-                                else
-                                  Wrap(
-                                    spacing: 6,
-                                    runSpacing: 6,
-                                    children: [
-                                      _buildMessageActionButton(
-                                        icon: Icons.edit_rounded,
-                                        label: '编辑',
-                                        onPressed: () => _editMessageAt(index),
-                                      ),
-                                      _buildMessageActionButton(
-                                        icon: Icons.content_copy_rounded,
-                                        label: '复制',
-                                        onPressed: () => _copyMessageAt(index),
-                                      ),
-                                      _buildMessageActionButton(
-                                        icon: Icons.refresh_rounded,
-                                        label: '重试',
-                                        onPressed: _sendingPrompt
-                                            ? null
-                                            : () => _retryMessageAt(index),
-                                      ),
-                                    ],
+                                : Icon(
+                                    Icons.undo_rounded,
+                                    size: 16,
+                                    color: canRollbackHere
+                                        ? AppPalette.muted
+                                        : AppPalette.muted.withValues(
+                                            alpha: 0.45,
+                                          ),
                                   ),
-                              ],
-                            ],
                           ),
                         ),
                       ),
-                      if (isUser)
-                        Container(
-                          width: 28,
-                          height: 28,
-                          margin: const EdgeInsets.only(left: 8),
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Color(0x1AFF9F1C),
+                    ),
+                  ),
+                Flexible(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: background,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppPalette.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (isEditingMessage)
+                          TextField(
+                            controller: _messageEditController,
+                            autofocus: true,
+                            minLines: 2,
+                            maxLines: 8,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: AppPalette.ink,
+                              height: 1.45,
+                            ),
+                            decoration: InputDecoration(
+                              isDense: true,
+                              filled: true,
+                              fillColor: Colors.white.withValues(alpha: 0.88),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 8,
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                borderSide: BorderSide(
+                                  color: AppPalette.border,
+                                ),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                borderSide: BorderSide(
+                                  color: AppPalette.border,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                borderSide: const BorderSide(
+                                  color: AppPalette.primary,
+                                ),
+                              ),
+                            ),
+                          )
+                        else if (!isUser &&
+                            !isSystem &&
+                            message.hasStructuredParts)
+                          _buildStructuredAssistantMessageCard(
+                            message: message,
+                            messageIndex: index,
+                          )
+                        else
+                          Text(
+                            message.text,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: AppPalette.ink,
+                              height: 1.45,
+                            ),
                           ),
-                          child: const Icon(
-                            Icons.person_rounded,
-                            size: 16,
-                            color: Color(0xFFB35500),
+                        const SizedBox(height: 5),
+                        Text(
+                          message.time,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppPalette.muted,
                           ),
                         ),
-                    ],
+                        if (!isSystem) ...[
+                          const SizedBox(height: 6),
+                          if (isEditingMessage)
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                _buildMessageActionButton(
+                                  icon: Icons.check_rounded,
+                                  label: '保存',
+                                  onPressed: () =>
+                                      _saveInlineMessageEdit(index),
+                                ),
+                                _buildMessageActionButton(
+                                  icon: Icons.close_rounded,
+                                  label: '取消',
+                                  onPressed: _cancelInlineMessageEdit,
+                                ),
+                              ],
+                            )
+                          else
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                _buildMessageActionButton(
+                                  icon: Icons.edit_rounded,
+                                  label: '编辑',
+                                  onPressed: () => _editMessageAt(index),
+                                ),
+                                _buildMessageActionButton(
+                                  icon: Icons.content_copy_rounded,
+                                  label: '复制',
+                                  onPressed: () => _copyMessageAt(index),
+                                ),
+                                _buildMessageActionButton(
+                                  icon: Icons.refresh_rounded,
+                                  label: '重试',
+                                  onPressed: _sendingPrompt
+                                      ? null
+                                      : () => _retryMessageAt(index),
+                                ),
+                              ],
+                            ),
+                        ],
+                      ],
+                    ),
                   ),
-                );
-              },
+                ),
+                if (isUser)
+                  Container(
+                    width: 28,
+                    height: 28,
+                    margin: const EdgeInsets.only(left: 8),
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Color(0x1AFF9F1C),
+                    ),
+                    child: const Icon(
+                      Icons.person_rounded,
+                      size: 16,
+                      color: Color(0xFFB35500),
+                    ),
+                  ),
+              ],
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -9285,6 +15507,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     }
     final currentTitle = _normalizedConversationTitle();
     final avatar = currentTitle.isEmpty ? '聊' : currentTitle.substring(0, 1);
+    final currentWorkspaceLabel = _workspaceBindingLabel(_projectRootPath);
 
     return Drawer(
       width: MediaQuery.of(context).size.width * 0.86,
@@ -9401,6 +15624,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                         _buildConversationPreview(),
                         maxLength: 32,
                       ),
+                      workspaceLabel: currentWorkspaceLabel,
                       active: true,
                       pinned: _activeConversationPinned,
                       busy:
@@ -9424,6 +15648,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                           child: _buildDrawerConversationTile(
                             title: item.title,
                             subtitle: item.preview,
+                            workspaceLabel: _workspaceBindingLabel(
+                              item.projectRootPath,
+                            ),
                             active: false,
                             pinned: true,
                             busy:
@@ -9456,6 +15683,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                           child: _buildDrawerConversationTile(
                             title: item.title,
                             subtitle: item.preview,
+                            workspaceLabel: _workspaceBindingLabel(
+                              item.projectRootPath,
+                            ),
                             active: false,
                             pinned: item.isPinned,
                             busy:
@@ -9529,6 +15759,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     required String title,
     required String subtitle,
     required bool active,
+    String? workspaceLabel,
     bool pinned = false,
     bool busy = false,
     VoidCallback? onTap,
@@ -9591,6 +15822,18 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(fontSize: 12, color: AppPalette.muted),
           ),
+          if (workspaceLabel != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              workspaceLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                color: active ? AppPalette.primary : AppPalette.muted,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -10019,7 +16262,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                   ),
                   const Expanded(
                     child: Text(
-                      '设置',
+                      '工作台设置',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 24,
@@ -10037,6 +16280,567 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             ),
             const Divider(height: 1),
             Expanded(child: _buildSettingsBody()),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStructuredAssistantMessageCard({
+    required ChatMessage message,
+    required int messageIndex,
+  }) {
+    final reasoningParts = message.parts.whereType<ReasoningPart>().toList();
+    final contentParts = message.parts.whereType<ContentPart>().toList();
+    final toolParts = message.parts.whereType<ToolCallPart>().toList();
+    final progressParts = message.parts.whereType<AgentProgressPart>().toList();
+    final toolActivityParts = message.parts
+        .whereType<ToolActivityPart>()
+        .toList();
+    final citationParts = message.parts.whereType<CitationPart>().toList();
+    final metadataPart = message.parts
+        .whereType<MetadataPart>()
+        .cast<MetadataPart?>()
+        .firstWhere((item) => item != null, orElse: () => null);
+    final metadata = metadataPart?.metadata ?? message.metadata;
+    final hasVisibleSection =
+        (_isReplySectionEnabled(_replySectionReasoning) &&
+            reasoningParts.isNotEmpty) ||
+        (_isReplySectionEnabled(_replySectionContent) &&
+            contentParts.isNotEmpty) ||
+        (_isReplySectionEnabled(_replySectionToolCalls) &&
+            toolParts.isNotEmpty) ||
+        (_isReplySectionEnabled(_replySectionAgentProgress) &&
+            progressParts.isNotEmpty) ||
+        (_isReplySectionEnabled(_replySectionToolActivity) &&
+            toolActivityParts.isNotEmpty) ||
+        (_isReplySectionEnabled(_replySectionMetadata) &&
+            metadata != null &&
+            metadata.hasAnyValue) ||
+        citationParts.isNotEmpty;
+
+    if (!hasVisibleSection) {
+      return Text(
+        message.text,
+        style: const TextStyle(
+          fontSize: 13,
+          color: AppPalette.ink,
+          height: 1.45,
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_isReplySectionEnabled(_replySectionReasoning) &&
+            reasoningParts.isNotEmpty)
+          _buildStructuredSection(
+            messageIndex: messageIndex,
+            sectionId: 'reasoning',
+            title: '思考内容',
+            subtitle: '${reasoningParts.length} 段',
+            defaultExpanded: false,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: reasoningParts
+                  .map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        item.summary,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppPalette.muted,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+        if (_isReplySectionEnabled(_replySectionContent) &&
+            contentParts.isNotEmpty)
+          _buildStructuredSection(
+            messageIndex: messageIndex,
+            sectionId: 'content',
+            title: '主体内容',
+            subtitle: '',
+            defaultExpanded: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: contentParts
+                  .map(
+                    (item) => MarkdownBody(
+                      data: item.markdown,
+                      selectable: true,
+                      styleSheet: MarkdownStyleSheet(
+                        p: const TextStyle(
+                          fontSize: 13,
+                          color: AppPalette.ink,
+                          height: 1.55,
+                        ),
+                        code: const TextStyle(
+                          fontFamily: 'JetBrainsMono',
+                          fontSize: 12,
+                          color: AppPalette.ink,
+                        ),
+                        codeblockDecoration: BoxDecoration(
+                          color: const Color(0xFFF5F7FA),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppPalette.border),
+                        ),
+                        blockquote: const TextStyle(
+                          fontSize: 12,
+                          color: AppPalette.muted,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+        if (_isReplySectionEnabled(_replySectionToolCalls) &&
+            toolParts.isNotEmpty)
+          _buildStructuredSection(
+            messageIndex: messageIndex,
+            sectionId: 'tools',
+            title: '工具调用',
+            subtitle: '${toolParts.length} 次',
+            defaultExpanded: false,
+            child: Column(
+              children: toolParts
+                  .map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFD),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppPalette.border),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    item.toolName,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppPalette.ink,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  item.status,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: AppPalette.muted,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (item.reason.trim().isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                '原因：${item.reason}',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppPalette.muted,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 4),
+                            SelectableText(
+                              item.argumentsJson,
+                              style: const TextStyle(
+                                fontFamily: 'JetBrainsMono',
+                                fontSize: 11,
+                                color: AppPalette.ink,
+                                height: 1.45,
+                              ),
+                            ),
+                            if (item.outputPreview.trim().isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                '结果：${item.outputPreview}',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppPalette.muted,
+                                  height: 1.4,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+        if (_isReplySectionEnabled(_replySectionAgentProgress) &&
+            progressParts.isNotEmpty)
+          _buildStructuredSection(
+            messageIndex: messageIndex,
+            sectionId: 'agent_progress',
+            title: '智能体进度说明',
+            subtitle:
+                '${progressParts.fold<int>(0, (sum, item) => sum + item.entries.length)} 条',
+            defaultExpanded: false,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: progressParts.map((part) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFD),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppPalette.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (part.summary.trim().isNotEmpty)
+                          Text(
+                            part.summary,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppPalette.ink,
+                            ),
+                          ),
+                        if (part.summary.trim().isNotEmpty &&
+                            part.entries.isNotEmpty)
+                          const SizedBox(height: 8),
+                        ...part.entries.map(
+                          (entry) => Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Container(
+                                  width: 7,
+                                  height: 7,
+                                  margin: const EdgeInsets.only(top: 5),
+                                  decoration: const BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: AppPalette.primary,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        entry.title,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: AppPalette.ink,
+                                        ),
+                                      ),
+                                      if (entry.detail.trim().isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 2,
+                                          ),
+                                          child: Text(
+                                            entry.detail,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: AppPalette.muted,
+                                              height: 1.4,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  entry.time,
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    color: AppPalette.muted,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        if (_isReplySectionEnabled(_replySectionToolActivity) &&
+            toolActivityParts.isNotEmpty)
+          _buildStructuredSection(
+            messageIndex: messageIndex,
+            sectionId: 'tool_activity',
+            title: '工具活动',
+            subtitle:
+                '${toolActivityParts.fold<int>(0, (sum, item) => sum + item.entries.length)} 条',
+            defaultExpanded: false,
+            child: Column(
+              children: toolActivityParts.expand((part) => part.entries).map((
+                entry,
+              ) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFD),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppPalette.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                entry.toolName,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppPalette.ink,
+                                ),
+                              ),
+                            ),
+                            if (entry.durationMs != null)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: Text(
+                                  '${entry.durationMs}ms',
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    color: AppPalette.muted,
+                                  ),
+                                ),
+                              ),
+                            Text(
+                              entry.status,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppPalette.muted,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (entry.argsPreview.trim().isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            entry.argsPreview,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppPalette.muted,
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                        if (entry.summary.trim().isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            entry.summary,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppPalette.ink,
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 6),
+                        Text(
+                          entry.time,
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: AppPalette.muted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        if (citationParts.isNotEmpty)
+          _buildStructuredSection(
+            messageIndex: messageIndex,
+            sectionId: 'citations',
+            title: '引用 / 溯源',
+            subtitle: '${citationParts.length} 条',
+            defaultExpanded: false,
+            child: Column(
+              children: citationParts
+                  .map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFD),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppPalette.border),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              item.title.isEmpty ? item.uri : item.title,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: AppPalette.ink,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            SelectableText(
+                              item.uri,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppPalette.primary,
+                              ),
+                            ),
+                            if (item.snippet.trim().isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                item.snippet,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppPalette.muted,
+                                  height: 1.4,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+        if (_isReplySectionEnabled(_replySectionMetadata) &&
+            metadata != null &&
+            metadata.hasAnyValue)
+          _buildStructuredSection(
+            messageIndex: messageIndex,
+            sectionId: 'metadata',
+            title: '元数据',
+            subtitle: '',
+            defaultExpanded: false,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (metadata.model.trim().isNotEmpty)
+                  _AgentMetricChip(label: '模型 ${metadata.model}'),
+                if (metadata.inputTokens != null)
+                  _AgentMetricChip(label: '输入 ${metadata.inputTokens}'),
+                if (metadata.outputTokens != null)
+                  _AgentMetricChip(label: '输出 ${metadata.outputTokens}'),
+                if (metadata.reasoningTokens != null)
+                  _AgentMetricChip(label: '推理 ${metadata.reasoningTokens}'),
+                if (metadata.elapsedMs != null)
+                  _AgentMetricChip(label: '耗时 ${metadata.elapsedMs}ms'),
+                if (metadata.finishReason.trim().isNotEmpty)
+                  _AgentMetricChip(label: '结束 ${metadata.finishReason}'),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildStructuredSection({
+    required int messageIndex,
+    required String sectionId,
+    required String title,
+    required String subtitle,
+    required bool defaultExpanded,
+    required Widget child,
+  }) {
+    final key = '$messageIndex:$sectionId';
+    final expanded =
+        _expandedStructuredMessageSections.contains(key) ||
+        (_expandedStructuredMessageSections.isEmpty && defaultExpanded);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppPalette.border),
+        ),
+        child: Column(
+          children: [
+            InkWell(
+              onTap: () {
+                setState(() {
+                  if (_expandedStructuredMessageSections.contains(key)) {
+                    _expandedStructuredMessageSections.remove(key);
+                  } else {
+                    _expandedStructuredMessageSections.add(key);
+                  }
+                });
+              },
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 9,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        subtitle.isEmpty ? title : '$title  $subtitle',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppPalette.ink,
+                        ),
+                      ),
+                    ),
+                    Icon(
+                      expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 18,
+                      color: AppPalette.muted,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (expanded)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                child: child,
+              ),
           ],
         ),
       ),
@@ -10093,43 +16897,186 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   }
 
   Widget _buildSettingsBody() {
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 16),
-      children: [
-        const _SectionTitle(title: '模型接入方'),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 14, 6),
-          child: _buildApiConnectionSection(),
+    final sections = <_SettingsSectionEntry>[
+      _SettingsSectionEntry(
+        id: 'solution_overview',
+        title: '方案总览',
+        summary: '查看当前移动端 AI 编程工作台的落地状态与性能优化结果。',
+        icon: Icons.dashboard_customize_rounded,
+        builder: _buildSolutionOverviewSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'components',
+        title: '内置组件',
+        summary: '查看已内置的运行时、工具链、Agent 能力与外部依赖说明。',
+        icon: Icons.widgets_rounded,
+        builder: _buildBuiltInComponentsSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'embedded_dev_stack',
+        title: '内置开发栈',
+        summary: '在 APK 内直接使用 Git、JADX 和 APK 签名校验能力，减少对外部 App 的依赖。',
+        icon: Icons.inventory_2_rounded,
+        builder: _buildEmbeddedDevStackSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'project',
+        title: '项目与工作区',
+        summary: '绑定项目目录、导入上下文、准备镜像工作区与文件权限。',
+        icon: Icons.folder_copy_rounded,
+        builder: _buildProjectSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'local_runtime',
+        title: 'Android 本地运行时',
+        summary: '管理前台服务、镜像工作区、本地 Shell 与运行状态。',
+        icon: Icons.memory_rounded,
+        builder: _buildLocalRuntimeSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'execution_backends',
+        title: '执行后端',
+        summary: '切换 Native / Termux / Shizuku / Root 等执行与设备控制后端。',
+        icon: Icons.hub_rounded,
+        builder: _buildExecutionBackendsSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'android_toolkit',
+        title: 'Android 工具',
+        summary: 'Gradle、ADB、Apktool、JADX、签名与安装能力集中在这里。',
+        icon: Icons.android_rounded,
+        builder: _buildAndroidToolkitSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'runtime_workbench',
+        title: '运行时工作台',
+        summary: '查看镜像差异、Git 输出、Shell 会话与同步状态。',
+        icon: Icons.workspaces_rounded,
+        builder: _buildRuntimeWorkbenchSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'agent',
+        title: 'Agent 执行',
+        summary: '查看规划、进度、工具调用与当前收敛状态。',
+        icon: Icons.auto_awesome_rounded,
+        builder: _buildAgentExecutionSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'api',
+        title: '模型与 API',
+        summary: '配置 OpenAI / Claude / DeepSeek 等模型连接。',
+        icon: Icons.link_rounded,
+        builder: _buildApiConnectionSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'reply_structure',
+        title: '回复结构',
+        summary: '勾选每次模型回复里默认展示哪些模块，包括思考、工具、进度和元数据。',
+        icon: Icons.view_agenda_rounded,
+        builder: _buildReplyStructureSection,
+      ),
+      _SettingsSectionEntry(
+        id: 'terminal',
+        title: '终端与后台',
+        summary: '终端能力、后台守护、通知保活等辅助能力。',
+        icon: Icons.dns_rounded,
+        builder: () => Column(
+          children: [
+            _buildBackgroundGuardSection(),
+            const SizedBox(height: 12),
+            _buildTerminalSection(),
+          ],
         ),
-        const SizedBox(height: 8),
-        const Divider(height: 1),
-        const _SectionTitle(title: '项目文件'),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-          child: _buildProjectSection(),
-        ),
-        const SizedBox(height: 8),
-        const Divider(height: 1),
-        const _SectionTitle(title: 'Local Runtime'),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-          child: _buildLocalRuntimeSection(),
-        ),
-        const SizedBox(height: 8),
-        const Divider(height: 1),
-        const _SectionTitle(title: '后台防中断'),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-          child: _buildBackgroundGuardSection(),
-        ),
-        const SizedBox(height: 8),
-        const Divider(height: 1),
-        const _SectionTitle(title: '终端功能'),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-          child: _buildTerminalSection(),
-        ),
-      ],
+      ),
+    ];
+
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(0, 0, 0, 16),
+      itemCount: sections.length,
+      itemBuilder: (context, index) =>
+          _buildSettingsSectionCard(sections[index]),
+    );
+  }
+
+  Widget _buildReplyStructureSection() {
+    final options =
+        <({String id, String title, String subtitle, IconData icon})>[
+          (
+            id: _replySectionReasoning,
+            title: '思考内容',
+            subtitle: '展示模型提炼出的推理摘要。',
+            icon: Icons.psychology_alt_rounded,
+          ),
+          (
+            id: _replySectionContent,
+            title: '主体内容',
+            subtitle: '展示最终正文和 Markdown 内容。',
+            icon: Icons.subject_rounded,
+          ),
+          (
+            id: _replySectionToolCalls,
+            title: '调用工具',
+            subtitle: '展示模型规划调用的工具与参数。',
+            icon: Icons.handyman_rounded,
+          ),
+          (
+            id: _replySectionAgentProgress,
+            title: '智能体进度说明',
+            subtitle: '展示执行过程中的计划、阶段和关键步骤。',
+            icon: Icons.timeline_rounded,
+          ),
+          (
+            id: _replySectionMetadata,
+            title: '元数据',
+            subtitle: '展示模型、Token、耗时和结束原因。',
+            icon: Icons.data_object_rounded,
+          ),
+          (
+            id: _replySectionToolActivity,
+            title: '工具活动',
+            subtitle: '展示工具执行状态、摘要和结果回顾。',
+            icon: Icons.precision_manufacturing_rounded,
+          ),
+        ];
+
+    return _PanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '每次模型回复的结构构成',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: AppPalette.ink,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            '勾选后会在聊天区的结构化回复里展示对应模块。取消勾选不会删除数据，只是不再默认展示。',
+            style: TextStyle(
+              fontSize: 12,
+              color: AppPalette.muted,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 10),
+          ...options.map((option) {
+            final enabled = _isReplySectionEnabled(option.id);
+            return CheckboxListTile(
+              value: enabled,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              secondary: Icon(option.icon, color: AppPalette.primary),
+              title: Text(option.title),
+              subtitle: Text(option.subtitle),
+              onChanged: (value) {
+                _setReplySectionEnabled(option.id, value ?? false);
+              },
+            );
+          }),
+        ],
+      ),
     );
   }
 
@@ -10399,17 +17346,13 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.copy_all_rounded),
-            label: Text(
-              _preparingLocalWorkspace
-                  ? 'Preparing local mirror...'
-                  : 'Prepare Local Workspace Mirror',
-            ),
+            label: Text(_preparingLocalWorkspace ? '正在准备本地镜像...' : '准备本地工作区镜像'),
           ),
           const SizedBox(height: 6),
           Text(
             _localRuntimeStatus.hasWorkspace
-                ? 'Mirror ready: ${_localRuntimeStatus.activeWorkspacePath}'
-                : 'Mirror not prepared yet.',
+                ? '镜像已就绪: ${_localRuntimeStatus.activeWorkspacePath}'
+                : '镜像尚未准备。',
             style: const TextStyle(fontSize: 11, color: AppPalette.muted),
           ),
           const SizedBox(height: 8),
@@ -10610,7 +17553,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                       ? Icons.stop_circle_outlined
                       : Icons.play_arrow_rounded,
                 ),
-                label: Text(running ? 'Stop Runtime' : 'Start Runtime'),
+                label: Text(running ? '停止运行时' : '启动运行时'),
               ),
               OutlinedButton.icon(
                 onPressed: _loadingLocalRuntimeStatus
@@ -10618,14 +17561,14 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                     : () =>
                           _refreshLocalRuntimeStatus(showFailureSnackBar: true),
                 icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Refresh'),
+                label: const Text('刷新'),
               ),
               OutlinedButton.icon(
                 onPressed: !supported || _preparingLocalWorkspace
                     ? null
                     : _prepareLocalWorkspaceMirror,
                 icon: const Icon(Icons.copy_all_rounded),
-                label: const Text('Mirror Workspace'),
+                label: const Text('镜像工作区'),
               ),
               OutlinedButton.icon(
                 onPressed: !supported
@@ -10636,68 +17579,1850 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                       ? Icons.terminal_rounded
                       : Icons.play_circle_outline_rounded,
                 ),
-                label: Text(shellRunning ? 'Stop Shell' : 'Start Shell'),
+                label: Text(shellRunning ? '停止 Shell' : '启动 Shell'),
               ),
             ],
           ),
           const SizedBox(height: 10),
           Text(
-            supported
-                ? 'Platform: Android local runtime enabled'
-                : 'Platform: local runtime unavailable',
+            supported ? '平台: 已启用 Android 本地运行时' : '平台: 当前设备不可用',
             style: const TextStyle(fontSize: 12, color: AppPalette.ink),
           ),
           if (runtimeRoot.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              'Runtime root: $runtimeRoot',
+              '运行时根目录: $runtimeRoot',
               style: const TextStyle(fontSize: 11, color: AppPalette.muted),
             ),
           ],
           if (workspacesRoot.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
-              'Workspace root: $workspacesRoot',
+              '工作区根目录: $workspacesRoot',
               style: const TextStyle(fontSize: 11, color: AppPalette.muted),
             ),
           ],
           if (workspacePath.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
-              'Active mirror: $workspacePath',
+              '当前镜像目录: $workspacePath',
               style: const TextStyle(fontSize: 11, color: AppPalette.muted),
             ),
             const SizedBox(height: 4),
             Text(
-              'Mirrored items: $fileCount files, $directoryCount directories',
+              '镜像统计: $fileCount 个文件，$directoryCount 个目录',
               style: const TextStyle(fontSize: 11, color: AppPalette.muted),
             ),
           ],
           const SizedBox(height: 6),
           Text(
-            shellRunning ? 'Shell session: running' : 'Shell session: stopped',
+            shellRunning ? 'Shell 会话: 运行中' : 'Shell 会话: 已停止',
             style: const TextStyle(fontSize: 11, color: AppPalette.muted),
           ),
           if (shellWorkingDirectory.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
-              'Shell cwd: $shellWorkingDirectory',
+              'Shell 工作目录: $shellWorkingDirectory',
               style: const TextStyle(fontSize: 11, color: AppPalette.muted),
             ),
           ],
           if (shellLastError.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
-              'Shell error: $shellLastError',
+              'Shell 错误: $shellLastError',
               style: const TextStyle(fontSize: 11, color: Colors.redAccent),
             ),
           ],
           if (lastError.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              'Last error: $lastError',
+              '最近错误: $lastError',
               style: const TextStyle(fontSize: 11, color: Colors.redAccent),
             ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildExecutionBackendsSection() {
+    final supported = Platform.isAndroid;
+    final termuxReady = _runtimeBackendStatus.termuxReady;
+    final termuxTemplateHint =
+        'proot-distro login ubuntu --shared-tmp -- /bin/bash -lc {{command}}';
+
+    Widget buildBackendCard({
+      required String title,
+      required String summary,
+      required bool ready,
+      required IconData icon,
+      VoidCallback? onOpen,
+    }) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF8FAFD),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppPalette.border),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: ready ? AppPalette.primary : AppPalette.muted),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppPalette.ink,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    summary,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppPalette.muted,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Chip(
+                  label: Text(ready ? '就绪' : '待配置'),
+                  visualDensity: VisualDensity.compact,
+                ),
+                if (onOpen != null)
+                  TextButton.icon(
+                    onPressed: onOpen,
+                    icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                    label: const Text('打开'),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+
+    final executionRoot = _primaryExecutionBackend == 'termux'
+        ? _termuxWorkingDirectory()
+        : _localRuntimeExecutionRoot();
+    final backendError = _runtimeBackendStatus.lastError.trim();
+
+    return _PanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '把构建、Git、安装与日志等操作分发到专用 Android 执行后端。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppPalette.muted,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+              if (_loadingRuntimeBackendStatus)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          buildBackendCard(
+            title: '原生 Shell 后端',
+            summary: '保留当前本地运行时流程，适合轻量命令与镜像工作区工具。',
+            ready: _runtimeBackendStatus.nativeAvailable,
+            icon: Icons.developer_mode_rounded,
+          ),
+          const SizedBox(height: 8),
+          buildBackendCard(
+            title: 'Termux / PRoot 后端',
+            summary: termuxReady
+                ? '推荐作为主后端，用于 Gradle、Python、Node、Git、apktool、jadx 与 Ubuntu 工具链。'
+                : '请先安装 Termux、授予 RUN_COMMAND 权限，再按需套用 PRoot Ubuntu 命令模板。',
+            ready: termuxReady,
+            icon: Icons.terminal_rounded,
+            onOpen: _runtimeBackendStatus.termuxLaunchable
+                ? () => _openRuntimeBackendApp('termux')
+                : null,
+          ),
+          const SizedBox(height: 8),
+          buildBackendCard(
+            title: 'Root / SU 设备后端',
+            summary: _runtimeBackendStatus.rootAvailable
+                ? '当 Shizuku 不可用时，可使用 Root 权限执行 pm 安装、设备命令和更完整的日志读取。'
+                : '这是面向已 Root 设备的备用方案；未 Root 设备可继续使用 CLI / ADB 或 Shizuku / 系统后端。',
+            ready: _runtimeBackendStatus.rootAvailable,
+            icon: Icons.security_rounded,
+          ),
+          const SizedBox(height: 8),
+          buildBackendCard(
+            title: 'Shizuku / 设备后端',
+            summary: _runtimeBackendStatus.shizukuInstalled
+                ? '适合在不依赖 CLI 工具链时执行 APK 安装与设备侧日志采集。'
+                : '安装 Shizuku 后可获得更丰富的设备操作能力，当前桥接已支持打开 Shizuku 和系统安装/日志动作。',
+            ready:
+                _runtimeBackendStatus.shizukuInstalled ||
+                _runtimeBackendStatus.systemLogcatAvailable,
+            icon: Icons.android_rounded,
+            onOpen: _runtimeBackendStatus.shizukuLaunchable
+                ? () => _openRuntimeBackendApp('shizuku')
+                : null,
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '主要执行后端',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: AppPalette.ink,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text('原生 Shell'),
+                selected: _primaryExecutionBackend == 'native',
+                onSelected: !supported
+                    ? null
+                    : (_) {
+                        setState(() {
+                          _primaryExecutionBackend = 'native';
+                        });
+                        _persistState();
+                      },
+              ),
+              ChoiceChip(
+                label: const Text('Termux / PRoot'),
+                selected: _primaryExecutionBackend == 'termux',
+                onSelected: !supported
+                    ? null
+                    : (_) {
+                        setState(() {
+                          _primaryExecutionBackend = 'termux';
+                        });
+                        _persistState();
+                      },
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '设备操作后端',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: AppPalette.ink,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text('CLI / ADB'),
+                selected: _deviceOperationsBackend == 'native',
+                onSelected: !supported
+                    ? null
+                    : (_) {
+                        setState(() {
+                          _deviceOperationsBackend = 'native';
+                        });
+                        _persistState();
+                      },
+              ),
+              ChoiceChip(
+                label: const Text('Shizuku / 系统'),
+                selected: _deviceOperationsBackend == 'shizuku',
+                onSelected: !supported
+                    ? null
+                    : (_) {
+                        setState(() {
+                          _deviceOperationsBackend = 'shizuku';
+                        });
+                        _persistState();
+                      },
+              ),
+              ChoiceChip(
+                label: const Text('Root / SU'),
+                selected: _deviceOperationsBackend == 'root',
+                onSelected: !supported
+                    ? null
+                    : (_) {
+                        setState(() {
+                          _deviceOperationsBackend = 'root';
+                        });
+                        _persistState();
+                      },
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _InputField(
+            label: 'Termux 工作目录',
+            controller: _termuxWorkdirController,
+            hintText: '/storage/emulated/0/your-project',
+            onChanged: (_) => _persistState(),
+          ),
+          const SizedBox(height: 10),
+          _InputField(
+            label: 'Termux 命令模板',
+            controller: _termuxCommandTemplateController,
+            hintText: termuxTemplateHint,
+            onChanged: (_) => _persistState(),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '使用 {{command}} 作为生成命令的占位符；留空则直接在 Termux 中执行原始命令。',
+            style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '当前主要后端：${_primaryBackendLabel(_primaryExecutionBackend)}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppPalette.ink,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '执行根目录：${executionRoot.isEmpty ? '尚未配置' : executionRoot}',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '设备后端：${_deviceBackendLabel(_deviceOperationsBackend)}',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+                ),
+                if (backendError.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '最近后端错误：$backendError',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Colors.redAccent,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _loadingRuntimeBackendStatus
+                    ? null
+                    : () => _refreshRuntimeBackendStatus(
+                        showFailureSnackBar: true,
+                      ),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('刷新'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _runtimeBackendStatus.termuxLaunchable
+                    ? () => _openRuntimeBackendApp('termux')
+                    : null,
+                icon: const Icon(Icons.open_in_new_rounded),
+                label: const Text('打开 Termux'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _runtimeBackendStatus.shizukuLaunchable
+                    ? () => _openRuntimeBackendApp('shizuku')
+                    : null,
+                icon: const Icon(Icons.open_in_new_rounded),
+                label: const Text('打开 Shizuku'),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: !supported ? null : _testCurrentExecutionBackend,
+                icon: const Icon(Icons.play_circle_outline_rounded),
+                label: const Text('测试后端'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAndroidToolkitSection() {
+    final supported =
+        Platform.isAndroid &&
+        (_primaryExecutionBackend == 'termux'
+            ? _runtimeBackendStatus.termuxReady
+            : _localRuntimeStatus.supported);
+    final executionRoot = _primaryExecutionBackend == 'termux'
+        ? _termuxWorkingDirectory()
+        : _localRuntimeExecutionRoot();
+    final reverseLabel = _androidToolkitReverseLabel();
+    final reverseRoot = _androidToolkitReverseRoot(reverseLabel);
+    final busy = _runningAndroidToolkitAction;
+
+    Future<void> runAction(
+      String title,
+      Future<Map<String, dynamic>> Function() action,
+    ) {
+      return _runAndroidToolkitAction(title: title, action: action);
+    }
+
+    return _PanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '使用所选执行后端来构建 Android 项目、分析 APK、借助 apktool 与 JADX 处理产物，并重新打包或签名。',
+            style: TextStyle(
+              fontSize: 12,
+              color: AppPalette.muted,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFD),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '状态：$_androidToolkitStatus',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppPalette.ink,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '执行根目录：${executionRoot.isEmpty ? '尚未就绪' : executionRoot}',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '主要后端：${_primaryBackendLabel(_primaryExecutionBackend)}',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '反编译工作区：$reverseRoot',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          _InputField(
+            label: 'APK 路径',
+            controller: _androidToolkitApkPathController,
+            hintText: '/storage/emulated/0/Download/app.apk',
+            onChanged: (_) => _persistState(),
+            suffix: IconButton(
+              tooltip: '选择 APK',
+              onPressed: () {
+                unawaited(
+                  _pickAndroidToolkitFile(
+                    _androidToolkitApkPathController,
+                    allowedExtensions: const <String>[
+                      'apk',
+                      'apkm',
+                      'xapk',
+                      'aab',
+                    ],
+                    updateReverseLabelFromApk: true,
+                  ),
+                );
+              },
+              icon: const Icon(Icons.upload_file_rounded),
+            ),
+          ),
+          const SizedBox(height: 10),
+          _InputField(
+            label: '反编译标签',
+            controller: _androidToolkitReverseLabelController,
+            hintText: 'sample_apk',
+            onChanged: (_) => _persistState(),
+          ),
+          const SizedBox(height: 10),
+          _InputField(
+            label: 'Gradle 任务',
+            controller: _androidToolkitGradleTaskController,
+            hintText: 'assembleDebug',
+            onChanged: (_) => _persistState(),
+          ),
+          const SizedBox(height: 10),
+          _InputField(
+            label: '安装包路径',
+            controller: _androidToolkitInstallApkPathController,
+            hintText: 'app/build/outputs/apk/debug/app-debug.apk',
+            onChanged: (_) => _persistState(),
+          ),
+          const SizedBox(height: 10),
+          _InputField(
+            label: 'Logcat 过滤器',
+            controller: _androidToolkitLogcatFilterController,
+            hintText: 'MyApp:D *:S',
+            onChanged: (_) => _persistState(),
+          ),
+          const SizedBox(height: 10),
+          _InputField(
+            label: 'JADX 搜索',
+            controller: _androidToolkitJadxQueryController,
+            hintText: 'MainActivity',
+            onChanged: (_) => _persistState(),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction(
+                            'Gradle 构建',
+                            () => _runAndroidGradleBuildTool(),
+                          ),
+                        );
+                      },
+                icon: busy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.build_circle_outlined),
+                label: const Text('构建'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction(
+                            '安装 APK',
+                            () => _runAndroidInstallApkTool(),
+                          ),
+                        );
+                      },
+                icon: const Icon(Icons.phone_android_rounded),
+                label: const Text('安装'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction('Logcat 日志', () => _runAndroidLogcatTool()),
+                        );
+                      },
+                icon: const Icon(Icons.subject_rounded),
+                label: const Text('日志'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: !_embeddedDevToolkitStatus.jadxAvailable || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction('内置 JADX 反编译', _runEmbeddedJadxTool),
+                        );
+                      },
+                icon: const Icon(Icons.integration_instructions_rounded),
+                label: const Text('内置 JADX'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !_embeddedDevToolkitStatus.apkSigAvailable || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction('校验 APK 签名', _verifyEmbeddedApkSignature),
+                        );
+                      },
+                icon: const Icon(Icons.verified_user_rounded),
+                label: const Text('内置签名校验'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction(
+                            'Apktool 反编译',
+                            () => _runAndroidApktoolDecodeTool(),
+                          ),
+                        );
+                      },
+                icon: const Icon(Icons.inventory_2_outlined),
+                label: const Text('Apktool'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction('运行 JADX', () => _runAndroidJadxTool()),
+                        );
+                      },
+                icon: const Icon(Icons.code_rounded),
+                label: const Text('JADX'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction(
+                            '搜索 JADX',
+                            () => _runAndroidJadxSearchTool(),
+                          ),
+                        );
+                      },
+                icon: const Icon(Icons.search_rounded),
+                label: const Text('搜索'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction(
+                            '重建 APK',
+                            () => _runAndroidApktoolBuildTool(),
+                          ),
+                        );
+                      },
+                icon: const Icon(Icons.construction_rounded),
+                label: const Text('重建'),
+              ),
+              OutlinedButton.icon(
+                onPressed: !supported || busy
+                    ? null
+                    : () {
+                        unawaited(
+                          runAction('签名 APK', () => _runAndroidSignApkTool()),
+                        );
+                      },
+                icon: const Icon(Icons.verified_rounded),
+                label: const Text('签名'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFD),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '工具链',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppPalette.ink,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  '这些命令会在当前选中的 CLI 后端中执行，请填写该环境里真实存在的二进制命令。',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: AppPalette.muted,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                _InputField(
+                  label: 'ADB 命令',
+                  controller: _androidToolkitAdbCommandController,
+                  hintText: 'adb',
+                  onChanged: (_) => _persistState(),
+                ),
+                const SizedBox(height: 10),
+                _InputField(
+                  label: 'Gradle 备用命令',
+                  controller: _androidToolkitGradleCommandController,
+                  hintText: 'gradle',
+                  onChanged: (_) => _persistState(),
+                ),
+                const SizedBox(height: 10),
+                _InputField(
+                  label: 'Apktool 命令',
+                  controller: _androidToolkitApktoolCommandController,
+                  hintText: 'apktool',
+                  onChanged: (_) => _persistState(),
+                ),
+                const SizedBox(height: 10),
+                _InputField(
+                  label: 'JADX 命令',
+                  controller: _androidToolkitJadxCommandController,
+                  hintText: 'jadx',
+                  onChanged: (_) => _persistState(),
+                ),
+                const SizedBox(height: 10),
+                _InputField(
+                  label: 'Apksigner 命令',
+                  controller: _androidToolkitApksignerCommandController,
+                  hintText: 'apksigner',
+                  onChanged: (_) => _persistState(),
+                ),
+                const SizedBox(height: 10),
+                _InputField(
+                  label: 'Zipalign 命令',
+                  controller: _androidToolkitZipalignCommandController,
+                  hintText: 'zipalign',
+                  onChanged: (_) => _persistState(),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFD),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '签名配置',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppPalette.ink,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: () {
+                        unawaited(
+                          _pickAndroidToolkitFile(
+                            _androidToolkitKeystorePathController,
+                            allowedExtensions: const <String>[
+                              'jks',
+                              'keystore',
+                              'p12',
+                              'pkcs12',
+                            ],
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.key_rounded, size: 16),
+                      label: const Text('选择'),
+                    ),
+                  ],
+                ),
+                _InputField(
+                  label: 'Keystore 路径',
+                  controller: _androidToolkitKeystorePathController,
+                  hintText: '/storage/emulated/0/Download/release.jks',
+                  onChanged: (_) => _persistState(),
+                ),
+                const SizedBox(height: 10),
+                _InputField(
+                  label: '别名',
+                  controller: _androidToolkitKeystoreAliasController,
+                  hintText: 'release',
+                  onChanged: (_) => _persistState(),
+                ),
+                const SizedBox(height: 10),
+                _InputField(
+                  label: 'Store 密码',
+                  controller: _androidToolkitStorePasswordController,
+                  hintText: '签名时必填',
+                  obscureText: true,
+                  onChanged: (_) => _persistState(),
+                ),
+                const SizedBox(height: 10),
+                _InputField(
+                  label: 'Key 密码',
+                  controller: _androidToolkitKeyPasswordController,
+                  hintText: '若与 Store 密码相同可留空',
+                  obscureText: true,
+                  onChanged: (_) => _persistState(),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '工具箱输出',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppPalette.ink,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: _androidToolkitOutput.trim().isEmpty
+                    ? null
+                    : () =>
+                          _copyPlainText(_androidToolkitOutput, '安卓工具箱输出已复制。'),
+                icon: const Icon(Icons.copy_all_rounded, size: 14),
+                label: const Text('复制'),
+              ),
+            ],
+          ),
+          Container(
+            width: double.infinity,
+            constraints: const BoxConstraints(minHeight: 120, maxHeight: 260),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: SingleChildScrollView(
+              child: SelectableText(
+                _androidToolkitOutput.trim().isEmpty
+                    ? '这里会显示安卓构建、分析、签名与日志输出。'
+                    : _androidToolkitOutput,
+                style: const TextStyle(
+                  fontSize: 11,
+                  height: 1.45,
+                  color: AppPalette.ink,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRuntimeWorkbenchSection() {
+    Color chipColor(String changeType) {
+      switch (changeType) {
+        case 'added':
+          return const Color(0xFF0B6E4F);
+        case 'modified':
+          return const Color(0xFF2563EB);
+        case 'deleted':
+          return const Color(0xFFB45309);
+        default:
+          return const Color(0xFF7C3AED);
+      }
+    }
+
+    String changeLabel(String changeType) {
+      switch (changeType) {
+        case 'added':
+          return '新增';
+        case 'modified':
+          return '修改';
+        case 'deleted':
+          return '删除';
+        default:
+          return '类型变化';
+      }
+    }
+
+    final sourceRoot = _projectRootPath?.trim() ?? '';
+    final effectiveRoot = _displayProjectAccessRootPath();
+    final mirrorRoot = _localRuntimeStatus.activeWorkspacePath.trim();
+    final hasMirror = mirrorRoot.isNotEmpty;
+    final shellRunning = _localShellSnapshot.isRunning;
+
+    return _PanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '把 AI 工作区、镜像同步、Git 和 Shell 放到一起，方便你直接观察工具执行环境。',
+            style: TextStyle(
+              fontSize: 12,
+              color: AppPalette.muted,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFD),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '源目录: ${sourceRoot.isEmpty ? '未选择' : sourceRoot}',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.ink),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'AI 当前访问根: ${effectiveRoot.isEmpty ? '未就绪' : effectiveRoot}',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.ink),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '镜像工作区: ${hasMirror ? mirrorRoot : '尚未准备'}',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Shell 会话: ${shellRunning ? '运行中' : '未运行'}',
+                  style: const TextStyle(fontSize: 11, color: AppPalette.muted),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: _preparingLocalWorkspace
+                    ? null
+                    : _prepareLocalWorkspaceMirror,
+                icon: _preparingLocalWorkspace
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.copy_all_rounded),
+                label: const Text('准备镜像'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _loadingMirrorPreview
+                    ? null
+                    : _previewMirrorWorkspaceChanges,
+                icon: _loadingMirrorPreview
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.preview_rounded),
+                label: const Text('预览差异'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _syncingMirrorToSource
+                    ? null
+                    : _syncMirrorWorkspaceBackToSource,
+                icon: _syncingMirrorToSource
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.sync_alt_rounded),
+                label: const Text('同步回源目录'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _runningRuntimeWorkbenchCommand
+                    ? null
+                    : () => _runRuntimeWorkbenchCommand(
+                        title: 'Git 状态',
+                        action: () => _runGitStatusTool(maxOutputBytes: 196608),
+                      ),
+                icon: const Icon(Icons.account_tree_outlined),
+                label: const Text('Git 状态'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _runningRuntimeWorkbenchCommand
+                    ? null
+                    : () => _runRuntimeWorkbenchCommand(
+                        title: 'Git 差异',
+                        action: () => _runGitDiffTool(maxOutputBytes: 196608),
+                      ),
+                icon: const Icon(Icons.difference_rounded),
+                label: const Text('Git 差异'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _runningRuntimeWorkbenchCommand
+                    ? null
+                    : () => _runRuntimeWorkbenchCommand(
+                        title: 'Git 日志',
+                        action: () =>
+                            _runGitLogTool(limit: 20, maxOutputBytes: 131072),
+                      ),
+                icon: const Icon(Icons.history_rounded),
+                label: const Text('Git 日志'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _loadingLocalRuntimeStatus
+                    ? null
+                    : () =>
+                          _refreshLocalRuntimeStatus(showFailureSnackBar: true),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('刷新状态'),
+              ),
+              OutlinedButton.icon(
+                onPressed: shellRunning
+                    ? _stopShellSession
+                    : _startShellSession,
+                icon: Icon(
+                  shellRunning
+                      ? Icons.stop_circle_outlined
+                      : Icons.play_circle_outline_rounded,
+                ),
+                label: Text(shellRunning ? '停止 Shell' : '启动 Shell'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _clearShellBuffer,
+                icon: const Icon(Icons.cleaning_services_outlined),
+                label: const Text('清空 Shell'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            _mirrorPreviewSummary,
+            style: const TextStyle(fontSize: 12, color: AppPalette.muted),
+          ),
+          if (_mirrorPreviewEntries.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFD),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppPalette.border),
+              ),
+              child: Column(
+                children: _mirrorPreviewEntries.take(12).map((entry) {
+                  final color = chipColor(entry.changeType);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            changeLabel(entry.changeType),
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: color,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${entry.path}  (${entry.entityType})',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppPalette.ink,
+                              height: 1.35,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '运行输出',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppPalette.ink,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: _runtimeWorkbenchOutput.trim().isEmpty
+                    ? null
+                    : () => _copyPlainText(_runtimeWorkbenchOutput, '工作区输出已复制'),
+                icon: const Icon(Icons.copy_all_rounded, size: 14),
+                label: const Text('复制'),
+              ),
+            ],
+          ),
+          Container(
+            width: double.infinity,
+            constraints: const BoxConstraints(minHeight: 120, maxHeight: 260),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: SingleChildScrollView(
+              child: SelectableText(
+                _runtimeWorkbenchOutput.trim().isEmpty
+                    ? '这里会显示镜像预览、同步结果、Git 输出和 Shell 状态。'
+                    : _runtimeWorkbenchOutput,
+                style: const TextStyle(
+                  fontSize: 11,
+                  height: 1.45,
+                  color: AppPalette.ink,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _agentStatusColor(String status) {
+    switch (status) {
+      case 'running':
+        return const Color(0xFF0B6E4F);
+      case 'cached':
+        return const Color(0xFF2563EB);
+      case 'failed':
+        return const Color(0xFFB45309);
+      default:
+        return const Color(0xFF475569);
+    }
+  }
+
+  IconData _agentStatusIcon(String status) {
+    switch (status) {
+      case 'running':
+        return Icons.autorenew_rounded;
+      case 'cached':
+        return Icons.layers_rounded;
+      case 'failed':
+        return Icons.warning_amber_rounded;
+      default:
+        return Icons.check_circle_outline_rounded;
+    }
+  }
+
+  String _agentStatusLabel(String status) {
+    switch (status) {
+      case 'running':
+        return '执行中';
+      case 'cached':
+        return '缓存';
+      case 'failed':
+        return '失败';
+      default:
+        return '完成';
+    }
+  }
+
+  String _formatDurationLabel(int? durationMs) {
+    if (durationMs == null || durationMs <= 0) return '--';
+    if (durationMs < 1000) return '${durationMs}ms';
+    final seconds = durationMs / 1000;
+    return '${seconds.toStringAsFixed(seconds >= 10 ? 0 : 1)}s';
+  }
+
+  Widget _buildAgentExecutionSection() {
+    final runningCount = _agentToolEvents
+        .where((item) => item.status == 'running')
+        .length;
+    final doneCount = _agentToolEvents
+        .where((item) => item.status == 'done' || item.status == 'cached')
+        .length;
+    final failedCount = _agentToolEvents
+        .where((item) => item.status == 'failed')
+        .length;
+
+    return _PanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '智能体执行台',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: AppPalette.ink,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _agentLiveStatus,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppPalette.muted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                onPressed: () {
+                  setState(() {
+                    _agentProgressEntries.clear();
+                    _agentToolEvents.clear();
+                    _expandedAgentToolEventIds.clear();
+                    _agentPlanSummary = '';
+                    _agentExecutionPhase = _sendingPrompt ? '执行' : '待命';
+                    _agentConvergenceSummary = _sendingPrompt
+                        ? '等待新的工具活动'
+                        : '等待下一次请求';
+                    _agentConvergenceWarning = '';
+                    _agentCurrentRound = 0;
+                    _agentMaxRounds = 0;
+                    _agentSummaryMode = false;
+                    _agentToolFamilyCounts.clear();
+                    _agentLiveStatus = _sendingPrompt ? '执行中' : '空闲';
+                  });
+                },
+                icon: const Icon(Icons.cleaning_services_rounded),
+                tooltip: '清空面板',
+              ),
+            ],
+          ),
+          if (_agentPlanSummary.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF5F9FF),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFD9E6F5)),
+              ),
+              child: Text(
+                _agentPlanSummary,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppPalette.ink,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _AgentMetricChip(label: '步骤 ${_agentProgressEntries.length}'),
+              _AgentMetricChip(label: '工具 ${_agentToolEvents.length}'),
+              _AgentMetricChip(label: '执行中 $runningCount'),
+              _AgentMetricChip(label: '完成 $doneCount'),
+              if (failedCount > 0) _AgentMetricChip(label: '失败 $failedCount'),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _AgentMetricChip(label: '阶段 $_agentExecutionPhase'),
+              if (_agentMaxRounds > 0)
+                _AgentMetricChip(
+                  label: '回合 $_agentCurrentRound / $_agentMaxRounds',
+                ),
+              if (_agentSummaryMode) const _AgentMetricChip(label: '总结模式'),
+            ],
+          ),
+          if (_agentConvergenceSummary.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFD),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFD6E0EA)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '收敛状态',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppPalette.ink,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _agentConvergenceSummary,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppPalette.muted,
+                      height: 1.35,
+                    ),
+                  ),
+                  if (_agentConvergenceWarning.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF7ED),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFFF1C78A)),
+                      ),
+                      child: Text(
+                        _agentConvergenceWarning,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF9A5A00),
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (_agentToolFamilyCounts.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _agentToolFamilyCounts.entries
+                          .where((entry) => entry.value > 0)
+                          .map(
+                            (entry) => _AgentMetricChip(
+                              label: '${entry.key} ${entry.value}',
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          InkWell(
+            onTap: () {
+              setState(() {
+                _agentProgressCollapsed = !_agentProgressCollapsed;
+              });
+            },
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '进度说明',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppPalette.ink,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _agentProgressCollapsed
+                        ? Icons.expand_more_rounded
+                        : Icons.expand_less_rounded,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (!_agentProgressCollapsed) ...[
+            if (_agentProgressEntries.isEmpty)
+              const Text(
+                '当前还没有进度记录。',
+                style: TextStyle(fontSize: 12, color: AppPalette.muted),
+              )
+            else
+              ..._agentProgressEntries.reversed
+                  .take(8)
+                  .map(
+                    (entry) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFD),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppPalette.border),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    entry.title,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppPalette.ink,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  entry.time,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: AppPalette.muted,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (entry.detail.isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                entry.detail,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppPalette.muted,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+          ],
+          const SizedBox(height: 6),
+          InkWell(
+            onTap: () {
+              setState(() {
+                _agentToolsCollapsed = !_agentToolsCollapsed;
+              });
+            },
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '工具活动',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppPalette.ink,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _agentToolsCollapsed
+                        ? Icons.expand_more_rounded
+                        : Icons.expand_less_rounded,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (!_agentToolsCollapsed) ...[
+            if (_agentToolEvents.isEmpty)
+              const Text(
+                '当前还没有工具调用。',
+                style: TextStyle(fontSize: 12, color: AppPalette.muted),
+              )
+            else
+              ..._agentToolEvents.reversed
+                  .take(10)
+                  .map(
+                    (event) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Builder(
+                        builder: (context) {
+                          final expanded = _expandedAgentToolEventIds.contains(
+                            event.id,
+                          );
+                          final statusColor = _agentStatusColor(event.status);
+                          return Container(
+                            width: double.infinity,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF8FAFD),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: AppPalette.border),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                InkWell(
+                                  onTap: () {
+                                    setState(() {
+                                      if (expanded) {
+                                        _expandedAgentToolEventIds.remove(
+                                          event.id,
+                                        );
+                                      } else {
+                                        _expandedAgentToolEventIds.add(
+                                          event.id,
+                                        );
+                                      }
+                                    });
+                                  },
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(10),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Icon(
+                                              _agentStatusIcon(event.status),
+                                              size: 16,
+                                              color: statusColor,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Expanded(
+                                              child: Text(
+                                                event.name,
+                                                style: const TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: AppPalette.ink,
+                                                ),
+                                              ),
+                                            ),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 8,
+                                                    vertical: 4,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: statusColor.withValues(
+                                                  alpha: 0.12,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(999),
+                                              ),
+                                              child: Text(
+                                                _agentStatusLabel(event.status),
+                                                style: TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: statusColor,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Icon(
+                                              expanded
+                                                  ? Icons.expand_less_rounded
+                                                  : Icons.expand_more_rounded,
+                                              size: 18,
+                                              color: AppPalette.muted,
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          children: [
+                                            _AgentMetricChip(
+                                              label: '时间 ${event.time}',
+                                            ),
+                                            _AgentMetricChip(
+                                              label:
+                                                  '耗时 ${_formatDurationLabel(event.durationMs)}',
+                                            ),
+                                            if (event.commandText.isNotEmpty)
+                                              _AgentMetricChip(label: '含命令详情'),
+                                          ],
+                                        ),
+                                        if (event.summary.isNotEmpty) ...[
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            event.summary,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: AppPalette.ink,
+                                              height: 1.35,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                if (expanded) ...[
+                                  const Divider(height: 1),
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                      10,
+                                      10,
+                                      10,
+                                      10,
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        if (event.commandText.isNotEmpty) ...[
+                                          Row(
+                                            children: [
+                                              const Expanded(
+                                                child: Text(
+                                                  '命令原文',
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: AppPalette.ink,
+                                                  ),
+                                                ),
+                                              ),
+                                              TextButton.icon(
+                                                onPressed: () => _copyPlainText(
+                                                  event.commandText,
+                                                  '命令已复制',
+                                                ),
+                                                icon: const Icon(
+                                                  Icons.copy_all_rounded,
+                                                  size: 14,
+                                                ),
+                                                label: const Text('复制'),
+                                              ),
+                                            ],
+                                          ),
+                                          Container(
+                                            width: double.infinity,
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white,
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                              border: Border.all(
+                                                color: AppPalette.border,
+                                              ),
+                                            ),
+                                            child: SelectableText(
+                                              event.commandText,
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                                height: 1.4,
+                                                color: AppPalette.ink,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 10),
+                                        ],
+                                        Row(
+                                          children: [
+                                            const Expanded(
+                                              child: Text(
+                                                '原始调用参数',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: AppPalette.ink,
+                                                ),
+                                              ),
+                                            ),
+                                            TextButton.icon(
+                                              onPressed: () => _copyPlainText(
+                                                event.rawArgs,
+                                                '调用参数已复制',
+                                              ),
+                                              icon: const Icon(
+                                                Icons.copy_all_rounded,
+                                                size: 14,
+                                              ),
+                                              label: const Text('复制'),
+                                            ),
+                                          ],
+                                        ),
+                                        Container(
+                                          width: double.infinity,
+                                          padding: const EdgeInsets.all(10),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                            border: Border.all(
+                                              color: AppPalette.border,
+                                            ),
+                                          ),
+                                          child: SelectableText(
+                                            event.rawArgs,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              height: 1.4,
+                                              color: AppPalette.ink,
+                                            ),
+                                          ),
+                                        ),
+                                        if (event.stdout.trim().isNotEmpty) ...[
+                                          const SizedBox(height: 10),
+                                          const Text(
+                                            '标准输出 stdout',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w700,
+                                              color: AppPalette.ink,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Container(
+                                            width: double.infinity,
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white,
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                              border: Border.all(
+                                                color: AppPalette.border,
+                                              ),
+                                            ),
+                                            child: SelectableText(
+                                              event.stdout,
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                                height: 1.4,
+                                                color: AppPalette.ink,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                        if (event.stderr.trim().isNotEmpty) ...[
+                                          const SizedBox(height: 10),
+                                          const Text(
+                                            '错误输出 stderr',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w700,
+                                              color: Color(0xFFB45309),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Container(
+                                            width: double.infinity,
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white,
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                              border: Border.all(
+                                                color: const Color(0xFFE9C7A4),
+                                              ),
+                                            ),
+                                            child: SelectableText(
+                                              event.stderr,
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                                height: 1.4,
+                                                color: Color(0xFF8A4B08),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
           ],
         ],
       ),
@@ -10770,6 +19495,170 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             },
             icon: const Icon(Icons.terminal_rounded),
             label: const Text('打开终端'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsSectionEntry {
+  const _SettingsSectionEntry({
+    required this.id,
+    required this.title,
+    required this.summary,
+    required this.icon,
+    required this.builder,
+  });
+
+  final String id;
+  final String title;
+  final String summary;
+  final IconData icon;
+  final Widget Function() builder;
+}
+
+class _SolutionStatusCard extends StatelessWidget {
+  const _SolutionStatusCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.statusLabel,
+    required this.active,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final String statusLabel;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final tone = active ? const Color(0xFF0B6E4F) : const Color(0xFF9A6B16);
+    return Container(
+      width: 160,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE0E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: tone),
+          const SizedBox(height: 10),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: AppPalette.ink,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            style: const TextStyle(
+              fontSize: 11,
+              color: AppPalette.muted,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: tone.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              statusLabel,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: tone,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SolutionComponentRow extends StatelessWidget {
+  const _SolutionComponentRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.badge,
+    required this.tone,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final String badge;
+  final Color tone;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: tone.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, size: 18, color: tone),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppPalette.ink,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppPalette.muted,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: tone.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              badge,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: tone,
+              ),
+            ),
           ),
         ],
       ),
@@ -10930,10 +19819,17 @@ class _ModelRequestCancelledException implements Exception {
 }
 
 class _ChatCompletionResult {
-  const _ChatCompletionResult({required this.content, required this.toolCalls});
+  const _ChatCompletionResult({
+    required this.content,
+    required this.toolCalls,
+    this.reasoningSummary = '',
+    this.metadata = const ResponseMetadata(),
+  });
 
   final String content;
   final List<_ToolCall> toolCalls;
+  final String reasoningSummary;
+  final ResponseMetadata metadata;
 }
 
 class _ToolCall {
@@ -11015,6 +19911,8 @@ class _ConversationSummary {
     required this.timestampMs,
     this.messages = const [],
     this.isPinned = false,
+    this.projectRootPath,
+    this.projectContext = '',
   });
 
   final String id;
@@ -11023,6 +19921,8 @@ class _ConversationSummary {
   final int timestampMs;
   final List<ChatMessage> messages;
   final bool isPinned;
+  final String? projectRootPath;
+  final String projectContext;
 
   _ConversationSummary copyWith({
     String? id,
@@ -11031,6 +19931,8 @@ class _ConversationSummary {
     int? timestampMs,
     List<ChatMessage>? messages,
     bool? isPinned,
+    String? projectRootPath,
+    String? projectContext,
   }) {
     return _ConversationSummary(
       id: id ?? this.id,
@@ -11039,6 +19941,8 @@ class _ConversationSummary {
       timestampMs: timestampMs ?? this.timestampMs,
       messages: messages ?? this.messages,
       isPinned: isPinned ?? this.isPinned,
+      projectRootPath: projectRootPath ?? this.projectRootPath,
+      projectContext: projectContext ?? this.projectContext,
     );
   }
 
@@ -11050,6 +19954,8 @@ class _ConversationSummary {
       'timestampMs': timestampMs,
       'messages': messages.map((item) => item.toJson()).toList(),
       'isPinned': isPinned,
+      'projectRootPath': projectRootPath,
+      'projectContext': projectContext,
     };
   }
 
@@ -11079,6 +19985,9 @@ class _ConversationSummary {
     final id = rawId.isEmpty
         ? 'conv_${DateTime.now().microsecondsSinceEpoch}'
         : rawId;
+    final rawProjectRootPath = (json['projectRootPath'] ?? '')
+        .toString()
+        .trim();
     return _ConversationSummary(
       id: id,
       title: (json['title'] ?? '').toString(),
@@ -11086,6 +19995,8 @@ class _ConversationSummary {
       timestampMs: timestampMs,
       messages: messages,
       isPinned: json['isPinned'] == true,
+      projectRootPath: rawProjectRootPath.isEmpty ? null : rawProjectRootPath,
+      projectContext: (json['projectContext'] ?? '').toString(),
     );
   }
 }
@@ -11188,21 +20099,143 @@ class _InputField extends StatelessWidget {
   }
 }
 
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle({required this.title});
+class _TextEditingAlertDialog extends StatefulWidget {
+  const _TextEditingAlertDialog({
+    required this.title,
+    required this.initialValue,
+    required this.hintText,
+    required this.submitLabel,
+    this.maxLength,
+    this.trimOnSubmit = false,
+  });
 
   final String title;
+  final String initialValue;
+  final String hintText;
+  final String submitLabel;
+  final int? maxLength;
+  final bool trimOnSubmit;
+
+  @override
+  State<_TextEditingAlertDialog> createState() =>
+      _TextEditingAlertDialogState();
+}
+
+class _TextEditingAlertDialogState extends State<_TextEditingAlertDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialValue,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = widget.trimOnSubmit
+        ? _controller.text.trim()
+        : _controller.text;
+    Navigator.of(context).pop(value);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+    return AlertDialog(
+      title: Text(widget.title),
+      content: TextField(
+        controller: _controller,
+        maxLength: widget.maxLength,
+        autofocus: true,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _submit(),
+        decoration: InputDecoration(hintText: widget.hintText),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _submit, child: Text(widget.submitLabel)),
+      ],
+    );
+  }
+}
+
+class _AgentProgressEntry {
+  const _AgentProgressEntry({
+    required this.title,
+    required this.detail,
+    required this.time,
+  });
+
+  final String title;
+  final String detail;
+  final String time;
+}
+
+class _AgentToolEvent {
+  const _AgentToolEvent({
+    required this.id,
+    required this.name,
+    required this.status,
+    required this.argsPreview,
+    required this.summary,
+    required this.time,
+    required this.startedAtMs,
+    required this.durationMs,
+    required this.rawArgs,
+    required this.commandText,
+    required this.stdout,
+    required this.stderr,
+  });
+
+  final String id;
+  final String name;
+  final String status;
+  final String argsPreview;
+  final String summary;
+  final String time;
+  final int startedAtMs;
+  final int? durationMs;
+  final String rawArgs;
+  final String commandText;
+  final String stdout;
+  final String stderr;
+}
+
+class _MirrorChangeEntry {
+  const _MirrorChangeEntry({
+    required this.path,
+    required this.changeType,
+    required this.entityType,
+  });
+
+  final String path;
+  final String changeType;
+  final String entityType;
+}
+
+class _AgentMetricChip extends StatelessWidget {
+  const _AgentMetricChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3F6FA),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFFD6E0EA)),
+      ),
       child: Text(
-        title,
+        label,
         style: const TextStyle(
-          fontSize: 14,
-          color: AppPalette.muted,
-          fontWeight: FontWeight.w700,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: AppPalette.ink,
         ),
       ),
     );

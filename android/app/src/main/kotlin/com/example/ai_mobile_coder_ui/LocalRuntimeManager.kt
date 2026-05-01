@@ -1,4 +1,4 @@
-package com.example.ai_mobile_coder_ui
+package com.yuandex
 
 import android.content.Context
 import android.content.Intent
@@ -78,6 +78,7 @@ object LocalRuntimeManager {
         require(sourceRoot.isDirectory) { "Project root is not a directory." }
 
         ensureRuntimeDirectories(context)
+        LocalShellSessionManager.stopSession(context)
         val workspaceId = "ws_${stableHash(sourceRoot.absolutePath)}"
         val workspaceRoot = File(workspacesRoot(context), workspaceId)
         val mirrorRoot = File(workspaceRoot, "source")

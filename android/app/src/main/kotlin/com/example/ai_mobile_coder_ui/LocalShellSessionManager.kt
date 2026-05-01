@@ -1,12 +1,14 @@
-package com.example.ai_mobile_coder_ui
+package com.yuandex
 
 import android.content.Context
+import java.io.ByteArrayOutputStream
 import java.io.BufferedWriter
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStreamWriter
 import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 object LocalShellSessionManager {
@@ -104,6 +106,70 @@ object LocalShellSessionManager {
         return getSnapshot(context)
     }
 
+    fun executeCommand(
+        context: Context,
+        command: String,
+        timeoutMs: Long = 20000L,
+        maxOutputBytes: Int = 131072,
+    ): Map<String, Any> {
+        val trimmed = command.trim()
+        require(trimmed.isNotEmpty()) { "command is empty" }
+
+        val workingDir = LocalRuntimeManager.activeExecutionDirectory(context)
+        workingDir.mkdirs()
+        val boundedTimeoutMs = timeoutMs.coerceIn(1000L, 120000L)
+        val boundedMaxOutputBytes = maxOutputBytes.coerceIn(4096, 524288)
+
+        appendSystemLine("tool command start: $trimmed")
+
+        val started = ProcessBuilder("/system/bin/sh", "-c", trimmed)
+            .directory(workingDir)
+            .redirectErrorStream(false)
+            .start()
+
+        val stdoutFuture = executor.submit<StreamReadResult> {
+            readStreamLimited(started.inputStream, boundedMaxOutputBytes)
+        }
+        val stderrFuture = executor.submit<StreamReadResult> {
+            readStreamLimited(started.errorStream, boundedMaxOutputBytes)
+        }
+
+        val finished = started.waitFor(boundedTimeoutMs, TimeUnit.MILLISECONDS)
+        if (!finished) {
+            started.destroy()
+            if (started.isAlive) {
+                started.destroyForcibly()
+            }
+        }
+
+        val stdout = stdoutFuture.get(2, TimeUnit.SECONDS)
+        val stderr = stderrFuture.get(2, TimeUnit.SECONDS)
+        val exitCode = if (finished) started.exitValue() else -1
+        val ok = finished && exitCode == 0
+
+        if (ok) {
+            appendSystemLine("tool command succeeded: $trimmed")
+        } else if (!finished) {
+            appendSystemLine("tool command timed out: $trimmed")
+        } else {
+            appendSystemLine("tool command failed with exit code $exitCode: $trimmed")
+        }
+
+        return linkedMapOf(
+            "ok" to ok,
+            "command" to trimmed,
+            "workingDirectory" to workingDir.absolutePath,
+            "exitCode" to exitCode,
+            "timedOut" to !finished,
+            "stdout" to stdout.text,
+            "stderr" to stderr.text,
+            "stdoutTruncated" to stdout.truncated,
+            "stderrTruncated" to stderr.truncated,
+            "maxOutputBytes" to boundedMaxOutputBytes,
+            "timeoutMs" to boundedTimeoutMs,
+        )
+    }
+
     private fun startReaders(started: Process) {
         if (!readersStarted.compareAndSet(false, true)) {
             return
@@ -189,4 +255,38 @@ object LocalShellSessionManager {
         } catch (_: Exception) {
         }
     }
+
+    private fun readStreamLimited(
+        stream: InputStream,
+        maxBytes: Int,
+    ): StreamReadResult {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(4096)
+        var truncated = false
+        while (true) {
+            val count = stream.read(buffer)
+            if (count <= 0) {
+                break
+            }
+            val remaining = maxBytes - output.size()
+            if (remaining > 0) {
+                val bytesToWrite = count.coerceAtMost(remaining)
+                output.write(buffer, 0, bytesToWrite)
+                if (bytesToWrite < count) {
+                    truncated = true
+                }
+            } else {
+                truncated = true
+            }
+        }
+        return StreamReadResult(
+            text = output.toString(Charsets.UTF_8.name()),
+            truncated = truncated,
+        )
+    }
+
+    private data class StreamReadResult(
+        val text: String,
+        val truncated: Boolean,
+    )
 }
