@@ -178,6 +178,9 @@ class ToolCallPart extends ResponsePart {
     this.reason = '',
     this.status = 'done',
     this.outputPreview = '',
+    this.commandText = '',
+    this.stdout = '',
+    this.stderr = '',
   }) : super(kind: ResponsePartKind.toolCall);
 
   final String id;
@@ -186,6 +189,9 @@ class ToolCallPart extends ResponsePart {
   final String reason;
   final String status;
   final String outputPreview;
+  final String commandText;
+  final String stdout;
+  final String stderr;
 
   @override
   Map<String, dynamic> toJson() {
@@ -197,6 +203,9 @@ class ToolCallPart extends ResponsePart {
       'reason': reason,
       'status': status,
       'outputPreview': outputPreview,
+      'commandText': commandText,
+      'stdout': stdout,
+      'stderr': stderr,
     };
   }
 
@@ -208,6 +217,9 @@ class ToolCallPart extends ResponsePart {
       reason: (json['reason'] ?? '').toString(),
       status: (json['status'] ?? 'done').toString(),
       outputPreview: (json['outputPreview'] ?? '').toString(),
+      commandText: (json['commandText'] ?? '').toString(),
+      stdout: (json['stdout'] ?? '').toString(),
+      stderr: (json['stderr'] ?? '').toString(),
     );
   }
 }

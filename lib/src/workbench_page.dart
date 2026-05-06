@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'local_runtime.dart';
@@ -1094,6 +1095,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     return _enabledReplyStructureSections.contains(sectionId);
   }
 
+  bool get _legacyStructuredAssistantSectionsEnabled => false;
+
   void _setReplySectionEnabled(String sectionId, bool enabled) {
     setState(() {
       if (enabled) {
@@ -1478,6 +1481,20 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       return;
     }
     setState(apply);
+  }
+
+  (String, String) _extractToolOutputStreams(String toolResult) {
+    if (toolResult.trim().isEmpty) return ('', '');
+    try {
+      final decoded = jsonDecode(toolResult);
+      if (decoded is Map) {
+        return (
+          decoded['stdout']?.toString() ?? '',
+          decoded['stderr']?.toString() ?? '',
+        );
+      }
+    } catch (_) {}
+    return ('', '');
   }
 
   String _buildAssistantPlanMessage({
@@ -2044,6 +2061,107 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       fallback: 'sample_apk',
     );
     return 'reverse/$effectiveLabel';
+  }
+
+  String _workspaceSegmentFromConversation([String? value]) {
+    final source = (value ?? _conversationTitle).trim();
+    if (source.isEmpty || source == _defaultConversationTitle) {
+      return _sanitizeWorkspaceSegment(
+        _activeConversationId,
+        fallback: 'workspace',
+      );
+    }
+    return _sanitizeWorkspaceSegment(source, fallback: 'workspace');
+  }
+
+  Future<Directory> _workspaceStoreRootDirectory() async {
+    final base = await getApplicationSupportDirectory();
+    final root = Directory('${base.path}${Platform.pathSeparator}workspaces');
+    await root.create(recursive: true);
+    return root;
+  }
+
+  Future<String> _createLocalWorkspaceRootPath({
+    String? label,
+    String? sourcePath,
+  }) async {
+    final root = await _workspaceStoreRootDirectory();
+    final segment = _workspaceSegmentFromConversation(label);
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final folderName = sourcePath == null || sourcePath.trim().isEmpty
+        ? '${segment}_$stamp'
+        : '${segment}_${_sanitizeWorkspaceSegment(sourcePath, fallback: 'source')}_$stamp';
+    return '${root.path}${Platform.pathSeparator}$folderName';
+  }
+
+  Future<void> _createEmptyWorkspaceDirectory(String rootPath) async {
+    final dir = Directory(rootPath);
+    await dir.create(recursive: true);
+    final marker = File(
+      '${dir.path}${Platform.pathSeparator}.yuandex${Platform.pathSeparator}README.txt',
+    );
+    await marker.parent.create(recursive: true);
+    if (!await marker.exists()) {
+      await marker.writeAsString(
+        'This workspace was created by yuandex for the active conversation.\n',
+        flush: true,
+      );
+    }
+  }
+
+  Future<String> _bindWorkspacePath({
+    required String path,
+    required String statusText,
+    bool grantFileAccess = true,
+    bool silent = false,
+  }) async {
+    await _loadProjectFolder(path, silent: true);
+    if (!mounted) return path;
+    setState(() {
+      if (grantFileAccess) {
+        _aiFsGranted = true;
+      }
+      _fileOpsStatus = statusText;
+    });
+    _persistState();
+    if (!silent) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(statusText)));
+    }
+    return path;
+  }
+
+  Future<void> _createAndBindEmptyWorkspace({
+    String? label,
+    bool silent = false,
+  }) async {
+    final path = await _createLocalWorkspaceRootPath(label: label);
+    await _createEmptyWorkspaceDirectory(path);
+    await _bindWorkspacePath(
+      path: path,
+      statusText: '已创建并绑定本地工作区: $path',
+      grantFileAccess: true,
+      silent: silent,
+    );
+  }
+
+  Future<void> _unbindCurrentWorkspace() async {
+    if (_projectRootPath == null) return;
+    final projectName = _drawerExplorerProjectName();
+    setState(() {
+      _projectRootPath = null;
+      _projectContext = '';
+      _projectFiles = const [];
+      _aiFsGranted = false;
+      _fileOpsStatus = '已解绑工作区';
+      _resetDrawerExplorerState();
+    });
+    _persistState();
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已从当前对话解绑工作区: $projectName')));
   }
 
   bool _looksLikeAbsolutePath(String path) {
@@ -5536,6 +5654,18 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     return '';
   }
 
+  String _messageConversationText(ChatMessage message) {
+    if (message.text.trim().isNotEmpty) {
+      return message.text;
+    }
+    for (final part in message.parts) {
+      if (part is ContentPart && part.markdown.trim().isNotEmpty) {
+        return part.markdown;
+      }
+    }
+    return '';
+  }
+
   List<AgentProgressSnapshot> _snapshotAgentProgressEntries() {
     return _agentProgressEntries
         .map(
@@ -5568,6 +5698,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     required String time,
     String reasoningSummary = '',
     List<_ToolCall> toolCalls = const <_ToolCall>[],
+    String toolCallStatus = 'done',
     Map<String, String> toolOutputsById = const <String, String>{},
     List<CitationPart> citations = const <CitationPart>[],
     ResponseMetadata? metadata,
@@ -5589,14 +5720,20 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       parts.add(ContentPart(markdown: trimmedText));
     }
     for (final call in toolCalls) {
-      final preview = _summarizeForLog(toolOutputsById[call.id] ?? '');
+      final rawOutput = toolOutputsById[call.id] ?? '';
+      final preview = _summarizeForLog(rawOutput);
+      final outputStreams = _extractToolOutputStreams(rawOutput);
       parts.add(
         ToolCallPart(
           id: call.id,
           toolName: call.name,
           argumentsJson: call.argumentsJson,
           reason: _toolPlanPhrase(call.name),
+          status: toolCallStatus,
           outputPreview: preview,
+          commandText: _extractCommandPreview(call),
+          stdout: outputStreams.$1,
+          stderr: outputStreams.$2,
         ),
       );
     }
@@ -5624,6 +5761,33 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       time: time,
       parts: parts,
       metadata: metadata,
+    );
+  }
+
+  ChatMessage _buildToolRunMessage({
+    required _ToolCall call,
+    required String time,
+    String toolResult = '',
+    String status = 'running',
+  }) {
+    final outputStreams = _extractToolOutputStreams(toolResult);
+    return ChatMessage(
+      role: ChatRole.assistant,
+      text: '',
+      time: time,
+      parts: [
+        ToolCallPart(
+          id: call.id,
+          toolName: call.name,
+          argumentsJson: call.argumentsJson,
+          reason: _toolPlanPhrase(call.name),
+          status: status,
+          outputPreview: _summarizeForLog(toolResult),
+          commandText: _extractCommandPreview(call),
+          stdout: outputStreams.$1,
+          stderr: outputStreams.$2,
+        ),
+      ],
     );
   }
 
@@ -5707,6 +5871,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       isPinned: preservedPin ?? summary.isPinned,
       preview: _singleLinePreview(summary.preview, maxLength: 26),
       timestampMs: DateTime.now().millisecondsSinceEpoch,
+      clearProjectRootPath: summary.projectRootPath == null,
+      clearProjectContext: summary.projectRootPath == null,
     );
 
     if (index >= 0) {
@@ -5785,6 +5951,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       _projectRootPath = restoredProjectRoot;
       _projectContext = restoredProjectContext;
       _projectFiles = const [];
+      if (restoredProjectRoot == null) {
+        _aiFsGranted = false;
+      }
       _resetDrawerExplorerState();
       _aiRoundHistory.clear();
       _fileOpsStatus = '已恢复历史对话';
@@ -5828,6 +5997,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       _projectRootPath = null;
       _projectContext = '';
       _projectFiles = const [];
+      _aiFsGranted = false;
       _resetDrawerExplorerState();
       _aiRoundHistory.clear();
       _fileOpsStatus = '等待操作';
@@ -6521,13 +6691,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       if (index >= 0) {
         final item = _conversationHistory[index];
         final nextMessages = List<ChatMessage>.from(item.messages)
-          ..add(
-            ChatMessage(
-              role: message.role,
-              text: message.text,
-              time: message.time,
-            ),
-          );
+          ..add(message);
         final updated = item.copyWith(
           messages: nextMessages,
           preview: _buildConversationPreviewFromMessages(nextMessages),
@@ -6547,13 +6711,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           title: _defaultConversationTitle,
           preview: _singleLinePreview(message.text, maxLength: 26),
           timestampMs: DateTime.now().millisecondsSinceEpoch,
-          messages: [
-            ChatMessage(
-              role: message.role,
-              text: message.text,
-              time: message.time,
-            ),
-          ],
+          messages: [message],
         ),
       );
     });
@@ -6568,6 +6726,105 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         );
       }
     });
+  }
+
+  void _scheduleChatScrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_chatScroll.hasClients) {
+        _chatScroll.animateTo(
+          _chatScroll.position.maxScrollExtent + 120,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  int? _appendLiveAssistantPlaceholder({
+    required String conversationId,
+    required String time,
+  }) {
+    if (conversationId != _activeConversationId) return null;
+    late int index;
+    setState(() {
+      index = _messages.length;
+      _messages.add(
+        ChatMessage(role: ChatRole.assistant, text: '', time: time),
+      );
+    });
+    _scheduleChatScrollToBottom();
+    return index;
+  }
+
+  void _updateLiveAssistantMessage({
+    required String conversationId,
+    required int? messageIndex,
+    required ChatMessage message,
+    bool persist = false,
+  }) {
+    if (conversationId != _activeConversationId ||
+        messageIndex == null ||
+        messageIndex < 0 ||
+        messageIndex >= _messages.length) {
+      if (persist) {
+        _appendMessage(message, conversationId: conversationId);
+      }
+      return;
+    }
+
+    setState(() {
+      _messages[messageIndex] = message;
+    });
+    if (persist) {
+      _persistState();
+    }
+    _scheduleChatScrollToBottom();
+  }
+
+  bool _looksLikeWorkspaceCreationRequest(String text) {
+    final normalized = text.toLowerCase();
+    if (normalized.startsWith('@fs create-file') ||
+        normalized.startsWith('@fs create-dir') ||
+        normalized.startsWith('@fs write')) {
+      return true;
+    }
+    const markers = <String>[
+      '创建项目',
+      '新建项目',
+      '创建文件',
+      '新建文件',
+      '创建目录',
+      '新建目录',
+      '写一个demo',
+      '写一个 demo',
+      '做一个demo',
+      '做一个 demo',
+      '生成项目',
+      'generate a project',
+      'create a project',
+      'create file',
+      'new file',
+      'make a demo',
+      'build a demo',
+    ];
+    return markers.any(normalized.contains);
+  }
+
+  Future<void> _ensureWorkspaceForCreationPrompt({
+    required String text,
+    required String conversationId,
+  }) async {
+    if (_projectRootPath != null) return;
+    if (!_looksLikeWorkspaceCreationRequest(text)) return;
+    await _createAndBindEmptyWorkspace(label: _singleLinePreview(text));
+    _appendMessage(
+      ChatMessage(
+        role: ChatRole.system,
+        text: '已为当前对话创建并绑定一个本地工作区。后续 AI 文件读写只会发生在这个工作区内。',
+        time: _timeNow(),
+      ),
+      conversationId: conversationId,
+    );
   }
 
   Future<void> _sendPrompt() async {
@@ -6604,6 +6861,11 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
 
     _appendMessage(
       ChatMessage(role: ChatRole.user, text: text, time: _timeNow()),
+      conversationId: conversationId,
+    );
+
+    await _ensureWorkspaceForCreationPrompt(
+      text: text,
       conversationId: conversationId,
     );
 
@@ -7214,12 +7476,6 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   }
 
   String? _effectiveProjectAccessRootPath() {
-    if (_hasActiveMirrorWorkspace) {
-      final workspacePath = _localRuntimeStatus.activeWorkspacePath.trim();
-      if (workspacePath.isNotEmpty) {
-        return workspacePath;
-      }
-    }
     final projectRoot = _projectRootPath?.trim();
     if (projectRoot == null || projectRoot.isEmpty) {
       return null;
@@ -7726,7 +7982,11 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   Future<void> _pickProjectFolder() async {
     final path = await _manualFolderDialog();
     if (path == null || path.isEmpty) return;
-    await _loadProjectFolder(path);
+    await _bindWorkspacePath(
+      path: path,
+      statusText: '已绑定当前对话工作区: $path',
+      grantFileAccess: true,
+    );
   }
 
   void _injectProjectContext() {
@@ -8934,11 +9194,34 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         payload['tool_choice'] = 'auto';
       }
 
+      int? liveMessageIndex;
+      final liveMessageTime = _timeNow();
+      void handleReplyStream(_ChatCompletionStreamSnapshot snapshot) {
+        if (!snapshot.hasVisibleOutput) return;
+        liveMessageIndex ??= _appendLiveAssistantPlaceholder(
+          conversationId: conversationId,
+          time: liveMessageTime,
+        );
+        _updateLiveAssistantMessage(
+          conversationId: conversationId,
+          messageIndex: liveMessageIndex,
+          message: _buildStructuredAssistantMessage(
+            text: snapshot.content,
+            time: liveMessageTime,
+            reasoningSummary: snapshot.reasoningSummary,
+            toolCalls: snapshot.toolCalls,
+            toolCallStatus: 'streaming',
+            metadata: snapshot.metadata,
+          ),
+        );
+      }
+
       final result = await _requestChatCompletion(
         uri: uri,
         headers: headers,
         payload: payload,
         improveNetworkCompatibility: config.improveNetworkCompatibility,
+        onStreamSnapshot: handleReplyStream,
       );
 
       conversation.add(<String, dynamic>{
@@ -8955,25 +9238,32 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         if (replyText.isEmpty) {
           throw Exception('模型返回了空内容，请重试或切换模型。');
         }
-        _appendMessage(
-          _buildStructuredAssistantMessage(
-            text: replyText,
-            time: _timeNow(),
-            reasoningSummary: _buildReasoningSummary(
-              content: result.content,
-              toolCalls: result.toolCalls,
-              rawReasoning: result.reasoningSummary,
-            ),
-            toolOutputsById: collectedToolOutputs,
-            citations: _collectCitationPartsFromToolResults(
-              collectedToolOutputs.values,
-            ),
-            metadata: result.metadata,
-            progressEntries: _snapshotAgentProgressEntries(),
-            toolActivityEntries: _snapshotToolActivityEntries(),
+        final finalMessage = _buildStructuredAssistantMessage(
+          text: replyText,
+          time: liveMessageIndex == null ? _timeNow() : liveMessageTime,
+          reasoningSummary: _buildReasoningSummary(
+            content: result.content,
+            toolCalls: result.toolCalls,
+            rawReasoning: result.reasoningSummary,
           ),
-          conversationId: conversationId,
+          toolOutputsById: collectedToolOutputs,
+          citations: _collectCitationPartsFromToolResults(
+            collectedToolOutputs.values,
+          ),
+          metadata: result.metadata,
+          progressEntries: _snapshotAgentProgressEntries(),
+          toolActivityEntries: _snapshotToolActivityEntries(),
         );
+        if (liveMessageIndex == null) {
+          _appendMessage(finalMessage, conversationId: conversationId);
+        } else {
+          _updateLiveAssistantMessage(
+            conversationId: conversationId,
+            messageIndex: liveMessageIndex,
+            message: finalMessage,
+            persist: true,
+          );
+        }
         _updateReplyProgress('回复完成');
         return;
       }
@@ -9008,6 +9298,16 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           throw const _ModelRequestCancelledException();
         }
         _recordAgentToolStart(call);
+        final toolLiveTime = _timeNow();
+        final toolLiveMessageIndex = _appendLiveAssistantPlaceholder(
+          conversationId: conversationId,
+          time: toolLiveTime,
+        );
+        _updateLiveAssistantMessage(
+          conversationId: conversationId,
+          messageIndex: toolLiveMessageIndex,
+          message: _buildToolRunMessage(call: call, time: toolLiveTime),
+        );
         _appendMessage(
           ChatMessage(
             role: ChatRole.system,
@@ -9079,6 +9379,17 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         });
         collectedToolOutputs[call.id] = toolResult;
         _recordAgentToolFinish(call, toolResult, status: toolStatus);
+        _updateLiveAssistantMessage(
+          conversationId: conversationId,
+          messageIndex: toolLiveMessageIndex,
+          message: _buildToolRunMessage(
+            call: call,
+            time: toolLiveTime,
+            toolResult: toolResult,
+            status: toolStatus,
+          ),
+          persist: true,
+        );
 
         _appendMessage(
           ChatMessage(
@@ -9217,11 +9528,34 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         ],
         'temperature': temperature,
       };
+      int? planningLiveMessageIndex;
+      final planningLiveTime = _timeNow();
+      void handlePlanningStream(_ChatCompletionStreamSnapshot snapshot) {
+        if (!snapshot.hasVisibleOutput) return;
+        planningLiveMessageIndex ??= _appendLiveAssistantPlaceholder(
+          conversationId: conversationId,
+          time: planningLiveTime,
+        );
+        _updateLiveAssistantMessage(
+          conversationId: conversationId,
+          messageIndex: planningLiveMessageIndex,
+          message: _buildStructuredAssistantMessage(
+            text: snapshot.content,
+            time: planningLiveTime,
+            reasoningSummary: snapshot.reasoningSummary,
+            toolCalls: snapshot.toolCalls,
+            toolCallStatus: 'streaming',
+            metadata: snapshot.metadata,
+          ),
+        );
+      }
+
       final planningResult = await _requestChatCompletion(
         uri: uri,
         headers: headers,
         payload: planningPayload,
         improveNetworkCompatibility: config.improveNetworkCompatibility,
+        onStreamSnapshot: handlePlanningStream,
       );
       final planText = planningResult.content.trim().isEmpty
           ? '我会先定位相关目录和关键文件，再做必要修改与验证，最后给你一个明确结论。'
@@ -9247,14 +9581,24 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         _agentPlanSummary = _singleLinePreview(planText, maxLength: 120);
       }
       if (_isReplySectionEnabled(_replySectionAgentProgress)) {
-        _appendMessage(
-          ChatMessage(
-            role: ChatRole.assistant,
-            text: planText,
-            time: _timeNow(),
-          ),
-          conversationId: conversationId,
+        final planMessage = _buildStructuredAssistantMessage(
+          text: planText,
+          time: planningLiveMessageIndex == null
+              ? _timeNow()
+              : planningLiveTime,
+          reasoningSummary: planningResult.reasoningSummary,
+          metadata: planningResult.metadata,
         );
+        if (planningLiveMessageIndex == null) {
+          _appendMessage(planMessage, conversationId: conversationId);
+        } else {
+          _updateLiveAssistantMessage(
+            conversationId: conversationId,
+            messageIndex: planningLiveMessageIndex,
+            message: planMessage,
+            persist: true,
+          );
+        }
       }
       _recordAgentProgress('已给出执行方案', detail: _agentPlanSummary);
     }
@@ -9334,11 +9678,34 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         payload['tool_choice'] = 'auto';
       }
 
+      int? liveMessageIndex;
+      final liveMessageTime = _timeNow();
+      void handleReplyStream(_ChatCompletionStreamSnapshot snapshot) {
+        if (!snapshot.hasVisibleOutput) return;
+        liveMessageIndex ??= _appendLiveAssistantPlaceholder(
+          conversationId: conversationId,
+          time: liveMessageTime,
+        );
+        _updateLiveAssistantMessage(
+          conversationId: conversationId,
+          messageIndex: liveMessageIndex,
+          message: _buildStructuredAssistantMessage(
+            text: snapshot.content,
+            time: liveMessageTime,
+            reasoningSummary: snapshot.reasoningSummary,
+            toolCalls: snapshot.toolCalls,
+            toolCallStatus: 'streaming',
+            metadata: snapshot.metadata,
+          ),
+        );
+      }
+
       final result = await _requestChatCompletion(
         uri: uri,
         headers: headers,
         payload: payload,
         improveNetworkCompatibility: config.improveNetworkCompatibility,
+        onStreamSnapshot: handleReplyStream,
       );
 
       conversation.add(<String, dynamic>{
@@ -9359,25 +9726,32 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         if (replyText.isEmpty) {
           throw Exception('模型返回了空内容，请重试或切换模型。');
         }
-        _appendMessage(
-          _buildStructuredAssistantMessage(
-            text: replyText,
-            time: _timeNow(),
-            reasoningSummary: _buildReasoningSummary(
-              content: result.content,
-              toolCalls: result.toolCalls,
-              rawReasoning: result.reasoningSummary,
-            ),
-            toolOutputsById: collectedToolOutputs,
-            citations: _collectCitationPartsFromToolResults(
-              collectedToolOutputs.values,
-            ),
-            metadata: result.metadata,
-            progressEntries: _snapshotAgentProgressEntries(),
-            toolActivityEntries: _snapshotToolActivityEntries(),
+        final finalMessage = _buildStructuredAssistantMessage(
+          text: replyText,
+          time: liveMessageIndex == null ? _timeNow() : liveMessageTime,
+          reasoningSummary: _buildReasoningSummary(
+            content: result.content,
+            toolCalls: result.toolCalls,
+            rawReasoning: result.reasoningSummary,
           ),
-          conversationId: conversationId,
+          toolOutputsById: collectedToolOutputs,
+          citations: _collectCitationPartsFromToolResults(
+            collectedToolOutputs.values,
+          ),
+          metadata: result.metadata,
+          progressEntries: _snapshotAgentProgressEntries(),
+          toolActivityEntries: _snapshotToolActivityEntries(),
         );
+        if (liveMessageIndex == null) {
+          _appendMessage(finalMessage, conversationId: conversationId);
+        } else {
+          _updateLiveAssistantMessage(
+            conversationId: conversationId,
+            messageIndex: liveMessageIndex,
+            message: finalMessage,
+            persist: true,
+          );
+        }
         _updateReplyProgress('回复完成');
         return;
       }
@@ -9396,14 +9770,23 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           _agentPlanSummary = _singleLinePreview(planText, maxLength: 120);
         }
         if (_isReplySectionEnabled(_replySectionAgentProgress)) {
-          _appendMessage(
-            ChatMessage(
-              role: ChatRole.assistant,
-              text: planText,
-              time: _timeNow(),
-            ),
-            conversationId: conversationId,
+          final planMessage = _buildStructuredAssistantMessage(
+            text: planText,
+            time: liveMessageIndex == null ? _timeNow() : liveMessageTime,
+            reasoningSummary: result.reasoningSummary,
+            toolCalls: result.toolCalls,
+            metadata: result.metadata,
           );
+          if (liveMessageIndex == null) {
+            _appendMessage(planMessage, conversationId: conversationId);
+          } else {
+            _updateLiveAssistantMessage(
+              conversationId: conversationId,
+              messageIndex: liveMessageIndex,
+              message: planMessage,
+              persist: true,
+            );
+          }
         }
         _recordAgentProgress('已给出执行方案', detail: _agentPlanSummary);
       }
@@ -9435,6 +9818,16 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           throw const _ModelRequestCancelledException();
         }
         _recordAgentToolStart(call);
+        final toolLiveTime = _timeNow();
+        final toolLiveMessageIndex = _appendLiveAssistantPlaceholder(
+          conversationId: conversationId,
+          time: toolLiveTime,
+        );
+        _updateLiveAssistantMessage(
+          conversationId: conversationId,
+          messageIndex: toolLiveMessageIndex,
+          message: _buildToolRunMessage(call: call, time: toolLiveTime),
+        );
         _appendMessage(
           ChatMessage(
             role: ChatRole.system,
@@ -9534,6 +9927,17 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         });
         collectedToolOutputs[call.id] = toolResult;
         _recordAgentToolFinish(call, toolResult, status: toolStatus);
+        _updateLiveAssistantMessage(
+          conversationId: conversationId,
+          messageIndex: toolLiveMessageIndex,
+          message: _buildToolRunMessage(
+            call: call,
+            time: toolLiveTime,
+            toolResult: toolResult,
+            status: toolStatus,
+          ),
+          persist: true,
+        );
 
         _appendMessage(
           ChatMessage(
@@ -9565,6 +9969,11 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   }) {
     var history = _messages
         .where((message) => message.role != ChatRole.system)
+        .where(
+          (message) =>
+              message.role == ChatRole.user ||
+              _messageConversationText(message).trim().isNotEmpty,
+        )
         .toList();
     if (history.isNotEmpty &&
         history.first.role == ChatRole.assistant &&
@@ -9583,7 +9992,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     ];
     for (var i = 0; i < history.length; i++) {
       final item = history[i];
-      dynamic content = item.text;
+      dynamic content = _messageConversationText(item);
       final isLastUserMessage =
           i == history.length - 1 && item.role == ChatRole.user;
       if (isLastUserMessage && attachedImages.isNotEmpty) {
@@ -9799,12 +10208,391 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         text.contains('connection aborted');
   }
 
+  Future<_ChatCompletionResult> _requestChatCompletionStream({
+    required Uri uri,
+    required Map<String, String> headers,
+    required Map<String, dynamic> payload,
+    required bool improveNetworkCompatibility,
+    required void Function(_ChatCompletionStreamSnapshot snapshot)
+    onStreamSnapshot,
+  }) async {
+    final client = _createHttpClient(
+      improveNetworkCompatibility: improveNetworkCompatibility,
+    );
+    HttpClientRequest? request;
+    _activeChatClient = client;
+    final startedAtMs = DateTime.now().millisecondsSinceEpoch;
+    final streamPayload = <String, dynamic>{...payload, 'stream': true};
+    final content = StringBuffer();
+    final reasoning = StringBuffer();
+    final toolCallAccumulators = <String, _StreamingToolCallAccumulator>{};
+    final responseToolKeysByItemId = <String, String>{};
+    final responseToolKeysByOutputIndex = <String, String>{};
+    dynamic usage;
+    var modelName = '${payload['model'] ?? ''}'.trim();
+    var finishReason = '';
+    var lastEmitMs = 0;
+    var emittedAnySnapshot = false;
+    var processedSseData = false;
+
+    List<_ToolCall> currentToolCalls() {
+      return toolCallAccumulators.values
+          .map((item) => item.toToolCall())
+          .where((item) => item.name.trim().isNotEmpty)
+          .toList(growable: false);
+    }
+
+    ResponseMetadata currentMetadata() {
+      final elapsedMs = DateTime.now().millisecondsSinceEpoch - startedAtMs;
+      return _buildResponseMetadataFromUsage(
+        model: modelName,
+        finishReason: finishReason,
+        usage: usage,
+      ).copyWith(elapsedMs: elapsedMs);
+    }
+
+    void emitSnapshot({bool force = false}) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (!force && now - lastEmitMs < 80) return;
+      final snapshot = _ChatCompletionStreamSnapshot(
+        content: content.toString(),
+        reasoningSummary: reasoning.toString(),
+        toolCalls: currentToolCalls(),
+        metadata: currentMetadata(),
+      );
+      if (!snapshot.hasVisibleOutput && !force) return;
+      emittedAnySnapshot = true;
+      lastEmitMs = now;
+      onStreamSnapshot(snapshot);
+    }
+
+    _StreamingToolCallAccumulator accumulatorFor(String key) {
+      return toolCallAccumulators.putIfAbsent(
+        key,
+        () => _StreamingToolCallAccumulator(fallbackId: key),
+      );
+    }
+
+    String responseToolKeyFor({
+      required Map<String, dynamic> event,
+      Map? item,
+    }) {
+      final outputIndex = '${event['output_index'] ?? ''}'.trim();
+      final itemId =
+          '${event['item_id'] ?? item?['id'] ?? item?['call_id'] ?? ''}'.trim();
+      if (itemId.isNotEmpty && responseToolKeysByItemId[itemId] != null) {
+        return responseToolKeysByItemId[itemId]!;
+      }
+      if (outputIndex.isNotEmpty &&
+          responseToolKeysByOutputIndex[outputIndex] != null) {
+        return responseToolKeysByOutputIndex[outputIndex]!;
+      }
+
+      final seed = itemId.isNotEmpty
+          ? itemId
+          : outputIndex.isNotEmpty
+          ? 'index_$outputIndex'
+          : 'call_${toolCallAccumulators.length}';
+      final key = 'responses:$seed';
+      if (itemId.isNotEmpty) {
+        responseToolKeysByItemId[itemId] = key;
+      }
+      if (outputIndex.isNotEmpty) {
+        responseToolKeysByOutputIndex[outputIndex] = key;
+      }
+      return key;
+    }
+
+    void appendStreamingText(StringBuffer target, dynamic raw) {
+      final text = _extractStreamingText(raw);
+      if (text.isNotEmpty) {
+        target.write(text);
+      }
+    }
+
+    void applyChatCompletionChunk(Map<String, dynamic> decoded) {
+      final chunkModel = '${decoded['model'] ?? ''}'.trim();
+      if (chunkModel.isNotEmpty) {
+        modelName = chunkModel;
+      }
+      if (decoded.containsKey('usage')) {
+        usage = decoded['usage'];
+      }
+      final choices = decoded['choices'];
+      if (choices is! List) return;
+      for (var choiceIndex = 0; choiceIndex < choices.length; choiceIndex++) {
+        final choice = choices[choiceIndex];
+        if (choice is! Map) continue;
+        final finish = '${choice['finish_reason'] ?? ''}'.trim();
+        if (finish.isNotEmpty) {
+          finishReason = finish;
+        }
+        final delta = choice['delta'];
+        if (delta is Map) {
+          appendStreamingText(content, delta['content']);
+          appendStreamingText(content, delta['text']);
+          appendStreamingText(reasoning, delta['reasoning']);
+          appendStreamingText(reasoning, delta['reasoning_content']);
+          appendStreamingText(reasoning, delta['reasoning_text']);
+          final toolCalls = delta['tool_calls'];
+          if (toolCalls is List) {
+            for (var i = 0; i < toolCalls.length; i++) {
+              final item = toolCalls[i];
+              if (item is! Map) continue;
+              final index = item['index'] ?? i;
+              final key = 'chat:$choiceIndex:$index';
+              final accumulator = accumulatorFor(key);
+              final id = '${item['id'] ?? ''}'.trim();
+              if (id.isNotEmpty) accumulator.id = id;
+              final function = item['function'];
+              if (function is Map) {
+                final name = '${function['name'] ?? ''}'.trim();
+                if (name.isNotEmpty) accumulator.name = name;
+                final args = function['arguments'];
+                if (args != null) {
+                  accumulator.arguments.write(args.toString());
+                }
+              }
+            }
+          }
+        }
+        final message = choice['message'];
+        if (message is Map) {
+          appendStreamingText(content, message['content']);
+          appendStreamingText(reasoning, message['reasoning']);
+          appendStreamingText(reasoning, message['reasoning_content']);
+          for (final call in _extractToolCalls(message['tool_calls'])) {
+            final key = 'message:${call.id}';
+            final accumulator = accumulatorFor(key);
+            accumulator.id = call.id;
+            accumulator.name = call.name;
+            accumulator.arguments
+              ..clear()
+              ..write(call.argumentsJson);
+          }
+        }
+      }
+    }
+
+    void applyResponsesChunk(Map<String, dynamic> decoded) {
+      final type = '${decoded['type'] ?? ''}'.trim();
+      final response = decoded['response'];
+      if (response is Map) {
+        final responseModel = '${response['model'] ?? ''}'.trim();
+        if (responseModel.isNotEmpty) {
+          modelName = responseModel;
+        }
+        if (response.containsKey('usage')) {
+          usage = response['usage'];
+        }
+        final status = '${response['status'] ?? ''}'.trim();
+        if (status.isNotEmpty) {
+          finishReason = status;
+        }
+      }
+      if (type == 'response.output_text.delta' ||
+          type == 'response.refusal.delta') {
+        appendStreamingText(content, decoded['delta']);
+      } else if (type == 'response.reasoning_summary_text.delta' ||
+          type == 'response.reasoning_text.delta' ||
+          type.contains('reasoning') && type.endsWith('.delta')) {
+        appendStreamingText(reasoning, decoded['delta'] ?? decoded['text']);
+      } else if (type == 'response.function_call_arguments.delta') {
+        final key = responseToolKeyFor(event: decoded);
+        accumulatorFor(key).arguments.write('${decoded['delta'] ?? ''}');
+      } else if (type == 'response.function_call_arguments.done') {
+        final key = responseToolKeyFor(event: decoded);
+        final argumentsText =
+            decoded['arguments'] ?? decoded['delta'] ?? decoded['text'];
+        if (argumentsText != null) {
+          accumulatorFor(key).arguments
+            ..clear()
+            ..write(argumentsText.toString());
+        }
+      } else if (type == 'response.output_item.added' ||
+          type == 'response.output_item.done') {
+        final item = decoded['item'];
+        if (item is Map && '${item['type'] ?? ''}' == 'function_call') {
+          final key = responseToolKeyFor(event: decoded, item: item);
+          final accumulator = accumulatorFor(key);
+          final id = '${item['call_id'] ?? item['id'] ?? ''}'.trim();
+          if (id.isNotEmpty) accumulator.id = id;
+          final name = '${item['name'] ?? ''}'.trim();
+          if (name.isNotEmpty) accumulator.name = name;
+          if (item.containsKey('arguments')) {
+            accumulator.arguments
+              ..clear()
+              ..write('${item['arguments'] ?? '{}'}');
+          }
+        }
+      }
+    }
+
+    void applySseData(String data) {
+      final trimmed = data.trim();
+      if (trimmed.isEmpty || trimmed == '[DONE]') return;
+      processedSseData = true;
+      final decoded = jsonDecode(trimmed);
+      if (decoded is! Map<String, dynamic>) return;
+      if (decoded.containsKey('choices')) {
+        applyChatCompletionChunk(decoded);
+      } else {
+        applyResponsesChunk(decoded);
+      }
+      emitSnapshot();
+    }
+
+    try {
+      if (_stopReplyRequested) {
+        throw const _ModelRequestCancelledException();
+      }
+      request = await client.postUrl(uri);
+      _activeChatRequest = request;
+      _applyRequestNetworkProfile(
+        request,
+        improveNetworkCompatibility: improveNetworkCompatibility,
+      );
+      for (final entry in headers.entries) {
+        final value = entry.value.trim();
+        if (value.isEmpty) continue;
+        request.headers.set(entry.key, value);
+      }
+      request.headers.set(
+        HttpHeaders.acceptHeader,
+        'text/event-stream, application/json',
+      );
+      request.add(utf8.encode(jsonEncode(streamPayload)));
+      final response = await request.close();
+      if (_stopReplyRequested) {
+        throw const _ModelRequestCancelledException();
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        final body = await utf8.decoder.bind(response).join();
+        final snippet = _condenseErrorBody(body);
+        final suffix = snippet.isEmpty ? '' : ' - $snippet';
+        throw Exception('HTTP ${response.statusCode}$suffix');
+      }
+
+      var pending = '';
+      final rawResponse = StringBuffer();
+      await for (final chunk in utf8.decoder.bind(response)) {
+        if (_stopReplyRequested) {
+          throw const _ModelRequestCancelledException();
+        }
+        rawResponse.write(chunk);
+        pending += chunk.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+        while (true) {
+          final eventEnd = pending.indexOf('\n\n');
+          if (eventEnd < 0) break;
+          final rawEvent = pending.substring(0, eventEnd);
+          pending = pending.substring(eventEnd + 2);
+          final dataLines = rawEvent
+              .split('\n')
+              .where((line) => line.startsWith('data:'))
+              .map((line) => line.substring(5).trimLeft())
+              .toList();
+          if (dataLines.isEmpty) continue;
+          applySseData(dataLines.join('\n'));
+        }
+      }
+      if (pending.trim().isNotEmpty) {
+        final dataLines = pending
+            .split('\n')
+            .where((line) => line.startsWith('data:'))
+            .map((line) => line.substring(5).trimLeft())
+            .toList();
+        if (dataLines.isNotEmpty) {
+          applySseData(dataLines.join('\n'));
+        }
+      }
+      if (!processedSseData) {
+        final rawBody = rawResponse.toString().trim();
+        if (rawBody.isNotEmpty) {
+          final decoded = jsonDecode(rawBody);
+          if (decoded is! Map<String, dynamic>) {
+            throw Exception('Streaming response format was not a JSON object');
+          }
+          if (decoded.containsKey('output')) {
+            return _parseResponsesApiResult(decoded, payload: payload);
+          }
+          final choices = decoded['choices'];
+          if (choices is! List || choices.isEmpty) {
+            throw Exception('Streaming response did not contain SSE data');
+          }
+          final first = choices.first;
+          if (first is! Map<String, dynamic>) {
+            throw Exception('Streaming choices[0] format was invalid');
+          }
+          final message = first['message'];
+          if (message is! Map<String, dynamic>) {
+            throw Exception('Streaming response did not contain message');
+          }
+          return _ChatCompletionResult(
+            content: _extractAssistantText(message['content']),
+            toolCalls: _extractToolCalls(message['tool_calls']),
+            reasoningSummary: _extractReasoningText(message),
+            metadata: _buildResponseMetadataFromUsage(
+              model: '${decoded['model'] ?? payload['model'] ?? ''}',
+              finishReason: '${first['finish_reason'] ?? ''}'.trim(),
+              usage: decoded['usage'],
+            ),
+          );
+        }
+      }
+      emitSnapshot(force: true);
+      return _ChatCompletionResult(
+        content: content.toString().trim(),
+        toolCalls: currentToolCalls(),
+        reasoningSummary: reasoning.toString().trim(),
+        metadata: currentMetadata(),
+      );
+    } catch (error) {
+      if (_stopReplyRequested) {
+        throw const _ModelRequestCancelledException();
+      }
+      if (emittedAnySnapshot) {
+        emitSnapshot(force: true);
+      }
+      rethrow;
+    } finally {
+      if (identical(_activeChatRequest, request)) {
+        _activeChatRequest = null;
+      }
+      if (identical(_activeChatClient, client)) {
+        _activeChatClient = null;
+      }
+      client.close(force: true);
+    }
+  }
+
   Future<_ChatCompletionResult> _requestChatCompletion({
     required Uri uri,
     required Map<String, String> headers,
     required Map<String, dynamic> payload,
     required bool improveNetworkCompatibility,
+    void Function(_ChatCompletionStreamSnapshot snapshot)? onStreamSnapshot,
   }) async {
+    if (onStreamSnapshot != null) {
+      try {
+        return await _requestChatCompletionStream(
+          uri: uri,
+          headers: headers,
+          payload: payload,
+          improveNetworkCompatibility: improveNetworkCompatibility,
+          onStreamSnapshot: onStreamSnapshot,
+        );
+      } catch (error) {
+        if (_stopReplyRequested) {
+          throw const _ModelRequestCancelledException();
+        }
+        _recordAgentProgress(
+          'Streaming fallback',
+          detail: error.toString(),
+          updateLiveStatus: false,
+        );
+      }
+    }
+
     final client = _createHttpClient(
       improveNetworkCompatibility: improveNetworkCompatibility,
     );
@@ -9868,6 +10656,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       return _ChatCompletionResult(
         content: content,
         toolCalls: toolCalls,
+        reasoningSummary: _extractReasoningText(message),
         metadata: _buildResponseMetadataFromUsage(
           model: '${decoded['model'] ?? payload['model'] ?? ''}',
           finishReason: '${first['finish_reason'] ?? ''}'.trim(),
@@ -9911,6 +10700,43 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       return content['text']?.toString().trim() ?? '';
     }
     return content.toString();
+  }
+
+  String _extractStreamingText(dynamic content) {
+    if (content == null) return '';
+    if (content is String) return content;
+    if (content is List) {
+      final buffer = StringBuffer();
+      for (final item in content) {
+        buffer.write(_extractStreamingText(item));
+      }
+      return buffer.toString();
+    }
+    if (content is Map) {
+      return _extractStreamingText(
+        content['text'] ?? content['delta'] ?? content['content'],
+      );
+    }
+    return content.toString();
+  }
+
+  String _extractReasoningText(Map<String, dynamic> message) {
+    final parts = <String>[];
+    void add(dynamic raw) {
+      final text = _extractAssistantText(raw).trim();
+      if (text.isNotEmpty) parts.add(text);
+    }
+
+    add(message['reasoning']);
+    add(message['reasoning_content']);
+    add(message['reasoning_text']);
+    final reasoningDetails = message['reasoning_details'];
+    if (reasoningDetails is List) {
+      for (final item in reasoningDetails) {
+        add(item);
+      }
+    }
+    return parts.join('\n').trim();
   }
 
   _ChatCompletionResult _parseResponsesApiResult(
@@ -10048,10 +10874,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     if (_aiFsGranted && _projectRootPath != null) {
       tools.addAll(_buildFsTools());
     } else {
-      tools.addAll(_buildWebTools());
-      if (Platform.isAndroid && _localRuntimeStatus.supported) {
-        tools.addAll(_buildAndroidRuntimeTools());
-      }
+      tools.addAll(_buildWebTools(includeDownloadAsset: false));
     }
     if (_godotMcpReady) {
       tools.addAll(_buildGodotMcpTools());
@@ -10059,6 +10882,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     return tools;
   }
 
+  // ignore: unused_element
   List<Map<String, dynamic>> _buildAndroidRuntimeTools() {
     const allowedNames = <String>{
       'run_command',
@@ -10965,8 +11789,10 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     ];
   }
 
-  List<Map<String, dynamic>> _buildWebTools() {
-    return [
+  List<Map<String, dynamic>> _buildWebTools({
+    bool includeDownloadAsset = true,
+  }) {
+    final tools = <Map<String, dynamic>>[
       {
         'type': 'function',
         'function': {
@@ -11007,7 +11833,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           },
         },
       },
-      {
+    ];
+    if (includeDownloadAsset) {
+      tools.add({
         'type': 'function',
         'function': {
           'name': 'download_asset',
@@ -11035,8 +11863,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             'required': ['url', 'path'],
           },
         },
-      },
-    ];
+      });
+    }
+    return tools;
   }
 
   List<Map<String, dynamic>> _buildGodotMcpTools() {
@@ -16286,6 +17115,31 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     );
   }
 
+  Widget _buildAssistantMarkdownBody(String markdown) {
+    return MarkdownBody(
+      data: markdown,
+      selectable: true,
+      styleSheet: MarkdownStyleSheet(
+        p: const TextStyle(fontSize: 13, color: AppPalette.ink, height: 1.55),
+        code: const TextStyle(
+          fontFamily: 'JetBrainsMono',
+          fontSize: 12,
+          color: AppPalette.ink,
+        ),
+        codeblockDecoration: BoxDecoration(
+          color: const Color(0xFFF5F7FA),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppPalette.border),
+        ),
+        blockquote: const TextStyle(
+          fontSize: 12,
+          color: AppPalette.muted,
+          height: 1.5,
+        ),
+      ),
+    );
+  }
+
   Widget _buildStructuredAssistantMessageCard({
     required ChatMessage message,
     required int messageIndex,
@@ -16338,8 +17192,10 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           _buildStructuredSection(
             messageIndex: messageIndex,
             sectionId: 'reasoning',
-            title: '思考内容',
-            subtitle: '${reasoningParts.length} 段',
+            title: '思考',
+            subtitle: reasoningParts.length > 1
+                ? '${reasoningParts.length} 段'
+                : '',
             defaultExpanded: false,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -16361,6 +17217,15 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             ),
           ),
         if (_isReplySectionEnabled(_replySectionContent) &&
+            contentParts.isNotEmpty)
+          ...contentParts.map(
+            (item) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _buildAssistantMarkdownBody(item.markdown),
+            ),
+          ),
+        if (_legacyStructuredAssistantSectionsEnabled &&
+            _isReplySectionEnabled(_replySectionContent) &&
             contentParts.isNotEmpty)
           _buildStructuredSection(
             messageIndex: messageIndex,
@@ -16403,6 +17268,15 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             ),
           ),
         if (_isReplySectionEnabled(_replySectionToolCalls) &&
+            toolParts.isNotEmpty)
+          ...toolParts.map(
+            (item) => _buildToolCallTranscriptSection(
+              messageIndex: messageIndex,
+              item: item,
+            ),
+          ),
+        if (_legacyStructuredAssistantSectionsEnabled &&
+            _isReplySectionEnabled(_replySectionToolCalls) &&
             toolParts.isNotEmpty)
           _buildStructuredSection(
             messageIndex: messageIndex,
@@ -16747,7 +17621,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           _buildStructuredSection(
             messageIndex: messageIndex,
             sectionId: 'metadata',
-            title: '元数据',
+            title: '详情',
             subtitle: '',
             defaultExpanded: false,
             child: Wrap(
@@ -16847,7 +17721,101 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     );
   }
 
+  Widget _buildToolCallTranscriptSection({
+    required int messageIndex,
+    required ToolCallPart item,
+  }) {
+    final command = item.commandText.trim();
+    final status = item.status.trim();
+    final statusLabel = switch (status) {
+      'running' => '运行中',
+      'streaming' => '准备调用',
+      'cached' => '已复用',
+      'failed' => '失败',
+      'done' => '已完成',
+      _ => status,
+    };
+    final actionLabel = switch (status) {
+      'running' => '正在运行',
+      'streaming' => '准备调用',
+      _ => command.isNotEmpty ? '已运行' : '已调用',
+    };
+    final title = command.isNotEmpty
+        ? '$actionLabel ${_singleLinePreview(command, maxLength: 64)}'
+        : '$actionLabel ${item.toolName}';
+    final transcript = StringBuffer();
+    if (command.isNotEmpty) {
+      transcript.writeln('\$ $command');
+    } else if (item.argumentsJson.trim().isNotEmpty) {
+      transcript.writeln('参数');
+      transcript.writeln(item.argumentsJson.trim());
+    }
+    if (item.stdout.trim().isNotEmpty) {
+      if (transcript.isNotEmpty) transcript.writeln();
+      transcript.writeln(item.stdout.trimRight());
+    }
+    if (item.stderr.trim().isNotEmpty) {
+      if (transcript.isNotEmpty) transcript.writeln();
+      transcript.writeln('stderr');
+      transcript.writeln(item.stderr.trimRight());
+    }
+    if (transcript.isEmpty && item.outputPreview.trim().isNotEmpty) {
+      transcript.writeln(item.outputPreview.trim());
+    }
+
+    return _buildStructuredSection(
+      messageIndex: messageIndex,
+      sectionId: 'tool:${item.id.isEmpty ? item.toolName : item.id}',
+      title: title,
+      subtitle: statusLabel,
+      defaultExpanded: false,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF2B2B2B),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Shell',
+              style: TextStyle(
+                fontFamily: 'JetBrainsMono',
+                fontSize: 11,
+                color: Color(0xFFB8B8B8),
+              ),
+            ),
+            if (transcript.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              SelectableText(
+                transcript.toString().trimRight(),
+                style: const TextStyle(
+                  fontFamily: 'JetBrainsMono',
+                  fontSize: 12,
+                  color: Color(0xFFE7E7E7),
+                  height: 1.55,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _executeFileAction(String action) async {
+    if (_projectRootPath == null &&
+        (action == 'write' ||
+            action == 'create-file' ||
+            action == 'create-dir')) {
+      await _createAndBindEmptyWorkspace(
+        label: _filePathController.text.trim().isEmpty
+            ? _normalizedConversationTitle()
+            : _filePathController.text.trim(),
+      );
+    }
     if (_projectRootPath == null) {
       setState(() {
         _fileOpsStatus = '请先选择项目文件夹';
@@ -17251,6 +18219,117 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     );
   }
 
+  Widget _buildConversationWorkspaceHeader() {
+    final hasWorkspace = _projectRootPath?.trim().isNotEmpty ?? false;
+    final workspacePath = _projectRootPath?.trim() ?? '';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFD),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppPalette.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: hasWorkspace
+                      ? const Color(0x1A0B6E4F)
+                      : const Color(0x14334155),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  hasWorkspace
+                      ? Icons.folder_copy_rounded
+                      : Icons.chat_bubble_outline_rounded,
+                  size: 18,
+                  color: hasWorkspace ? AppPalette.primary : AppPalette.muted,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      hasWorkspace ? '当前对话工作区' : '当前对话未绑定工作区',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: AppPalette.ink,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      hasWorkspace
+                          ? workspacePath
+                          : '普通聊天不会读取或修改文件；需要文件能力时可绑定文件夹，或创建本地空工作区。',
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppPalette.muted,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (_readingProject)
+                const Padding(
+                  padding: EdgeInsets.only(left: 8, top: 3),
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppPalette.primary,
+                ),
+                onPressed: _pickProjectFolder,
+                icon: const Icon(Icons.folder_open_rounded),
+                label: Text(hasWorkspace ? '更换工作区' : '绑定文件夹'),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: () => _createAndBindEmptyWorkspace(),
+                icon: const Icon(Icons.create_new_folder_rounded),
+                label: const Text('创建空工作区'),
+              ),
+              OutlinedButton.icon(
+                onPressed: hasWorkspace
+                    ? () => _loadProjectFolder(_projectRootPath!, silent: true)
+                    : null,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('刷新'),
+              ),
+              OutlinedButton.icon(
+                onPressed: hasWorkspace ? _unbindCurrentWorkspace : null,
+                icon: const Icon(Icons.link_off_rounded),
+                label: const Text('解绑'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildProjectSection() {
     const presetDownloadMaxBytes = <int>[
       16777216, // 16 MiB
@@ -17264,47 +18343,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  _projectRootPath ?? '未选择项目文件夹',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: AppPalette.muted),
-                ),
-              ),
-              if (_readingProject)
-                const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppPalette.primary,
-                  ),
-                  onPressed: _pickProjectFolder,
-                  icon: const Icon(Icons.folder_open_rounded),
-                  label: const Text('选择文件夹'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                onPressed: _projectRootPath == null
-                    ? null
-                    : () => _loadProjectFolder(_projectRootPath!),
-                icon: const Icon(Icons.refresh_rounded),
-                tooltip: '刷新',
-              ),
-            ],
-          ),
+          _buildConversationWorkspaceHeader(),
           const SizedBox(height: 8),
           OutlinedButton.icon(
             onPressed: _checkingPermissions
@@ -17326,7 +18365,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
-            onPressed: _injectProjectContext,
+            onPressed: _projectRootPath == null ? null : _injectProjectContext,
             icon: const Icon(Icons.integration_instructions_rounded),
             label: Text(
               _projectFiles.isEmpty
@@ -17336,7 +18375,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           ),
           const SizedBox(height: 8),
           FilledButton.tonalIcon(
-            onPressed: _preparingLocalWorkspace
+            onPressed: _projectRootPath == null || _preparingLocalWorkspace
                 ? null
                 : _prepareLocalWorkspaceMirror,
             icon: _preparingLocalWorkspace
@@ -17346,13 +18385,13 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.copy_all_rounded),
-            label: Text(_preparingLocalWorkspace ? '正在准备本地镜像...' : '准备本地工作区镜像'),
+            label: Text(_preparingLocalWorkspace ? '正在准备执行镜像...' : '准备执行镜像'),
           ),
           const SizedBox(height: 6),
           Text(
             _localRuntimeStatus.hasWorkspace
-                ? '镜像已就绪: ${_localRuntimeStatus.activeWorkspacePath}'
-                : '镜像尚未准备。',
+                ? '执行镜像已就绪: ${_localRuntimeStatus.activeWorkspacePath}'
+                : '执行镜像尚未准备。',
             style: const TextStyle(fontSize: 11, color: AppPalette.muted),
           ),
           const SizedBox(height: 8),
@@ -17361,10 +18400,12 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             contentPadding: EdgeInsets.zero,
             title: const Text('授予 AI 文件夹读写权限'),
             subtitle: const Text('允许 AI 在此目录执行新建/删除/读写'),
-            onChanged: (value) {
-              setState(() => _aiFsGranted = value);
-              _persistState();
-            },
+            onChanged: _projectRootPath == null
+                ? null
+                : (value) {
+                    setState(() => _aiFsGranted = value);
+                    _persistState();
+                  },
           ),
           const Text(
             'AI 命令格式: @fs read 路径 / @fs write 路径 ::: 内容 / @fs create-file / @fs create-dir / @fs delete / @fs download URL ::: 路径',
@@ -19818,6 +20859,25 @@ class _ModelRequestCancelledException implements Exception {
   String toString() => '模型请求已取消';
 }
 
+class _ChatCompletionStreamSnapshot {
+  const _ChatCompletionStreamSnapshot({
+    required this.content,
+    required this.reasoningSummary,
+    required this.toolCalls,
+    required this.metadata,
+  });
+
+  final String content;
+  final String reasoningSummary;
+  final List<_ToolCall> toolCalls;
+  final ResponseMetadata metadata;
+
+  bool get hasVisibleOutput =>
+      content.trim().isNotEmpty ||
+      reasoningSummary.trim().isNotEmpty ||
+      toolCalls.isNotEmpty;
+}
+
 class _ChatCompletionResult {
   const _ChatCompletionResult({
     required this.content,
@@ -19830,6 +20890,26 @@ class _ChatCompletionResult {
   final List<_ToolCall> toolCalls;
   final String reasoningSummary;
   final ResponseMetadata metadata;
+}
+
+class _StreamingToolCallAccumulator {
+  _StreamingToolCallAccumulator({required this.fallbackId});
+
+  final String fallbackId;
+  String id = '';
+  String name = '';
+  final StringBuffer arguments = StringBuffer();
+
+  _ToolCall toToolCall() {
+    final resolvedId = id.trim().isEmpty ? fallbackId : id.trim();
+    return _ToolCall(
+      id: resolvedId,
+      name: name.trim(),
+      argumentsJson: arguments.toString().trim().isEmpty
+          ? '{}'
+          : arguments.toString(),
+    );
+  }
 }
 
 class _ToolCall {
@@ -19932,7 +21012,9 @@ class _ConversationSummary {
     List<ChatMessage>? messages,
     bool? isPinned,
     String? projectRootPath,
+    bool clearProjectRootPath = false,
     String? projectContext,
+    bool clearProjectContext = false,
   }) {
     return _ConversationSummary(
       id: id ?? this.id,
@@ -19941,8 +21023,12 @@ class _ConversationSummary {
       timestampMs: timestampMs ?? this.timestampMs,
       messages: messages ?? this.messages,
       isPinned: isPinned ?? this.isPinned,
-      projectRootPath: projectRootPath ?? this.projectRootPath,
-      projectContext: projectContext ?? this.projectContext,
+      projectRootPath: clearProjectRootPath
+          ? null
+          : projectRootPath ?? this.projectRootPath,
+      projectContext: clearProjectContext
+          ? ''
+          : projectContext ?? this.projectContext,
     );
   }
 
